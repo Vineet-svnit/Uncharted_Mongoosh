@@ -1,0 +1,9 @@
+pymongo>=4.7.0
+voyageai>=0.3.0
+python-dotenv>=1.0.0
+pymupdf>=1.24.0
+reportlab>=4.1.0
+matplotlib>=3.9.0
+pillow>=10.3.0
+pytest>=8.2.0
+

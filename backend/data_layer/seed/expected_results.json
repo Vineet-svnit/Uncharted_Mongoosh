@@ -1,0 +1,31 @@
+{
+  "_comment": "Ground-truth answers for AegisRCA tests. DO NOT insert into MongoDB. Agent must discover these from actual evidence.",
+  "incident_id": "INC-2026-10-28-001",
+  "root_cause_pr": 812,
+  "root_cause_deployment_id": "DEP-812",
+  "root_cause_service": "auth-service",
+  "root_cause_config_key": "redis_pool_max_connections",
+  "redis_pool_before": 500,
+  "redis_pool_after": 50,
+  "deployment_time_utc": "2026-10-28T13:58:00Z",
+  "customer_impact_start_utc": "2026-10-28T14:02:00Z",
+  "customer_impact_end_utc": "2026-10-28T14:25:00Z",
+  "downtime_minutes": 23,
+  "rollback_pr": 813,
+  "rollback_time_utc": "2026-10-28T14:22:00Z",
+  "recovery_time_utc": "2026-10-28T14:25:00Z",
+  "redis_pool_peak_utilization_pct": 100,
+  "internal_retry_multiplier": 15,
+  "external_ingress_rps_baseline": 1200,
+  "external_ingress_rps_during_incident": 1200,
+  "ddos_confirmed": false,
+  "acme_sla": {
+    "customer_id": "acme-corp",
+    "applicable_clause": "3.2",
+    "downtime_range": "20 to less than 30 minutes",
+    "financial_credit_pct": 0,
+    "rca_required": true,
+    "rca_deadline_business_days": 5
+  }
+}
+
