@@ -1,0 +1,79 @@
+# AegisRCA — MongoDB (Atlas Local) Docker Compose
+# -----------------------------------------------
+# Uses the official MongoDB Atlas Local image which bundles:
+#   • mongod  – the database engine
+#   • mongot  – the Atlas Search / Vector Search engine
+#
+# This gives us full support for:
+#   $graphLookup, $search, $vectorSearch, $rankFusion
+#
+# ⚠️  DEVELOPMENT CREDENTIALS ONLY
+#     Change MONGODB_INITDB_ROOT_USERNAME / PASSWORD before any
+#     non-local deployment.
+
+services:
+  mongodb:
+    image: mongodb/mongodb-atlas-local:8.0.4
+    container_name: aegisrca-mongo
+    hostname: mongodb
+    restart: unless-stopped
+    environment:
+      # Note: mongodb-atlas-local requires MONGODB_ prefix (not MONGO_)
+      MONGODB_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-aegisrca}
+      MONGODB_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASS:-dev-only-change-this}
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-aegisrca}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASS:-dev-only-change-this}
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+      - mongo_config:/data/configdb
+      - mongot_data:/data/mongot
+    healthcheck:
+      test:
+        - CMD
+        - mongosh
+        - "--eval"
+        - "db.adminCommand('ping')"
+        - "--username"
+        - "${MONGO_ROOT_USER:-aegisrca}"
+        - "--password"
+        - "${MONGO_ROOT_PASS:-dev-only-change-this}"
+        - "--authenticationDatabase"
+        - "admin"
+        - "--quiet"
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  mongo_data:
+    name: aegisrca_mongo_data
+  mongo_config:
+    name: aegisrca_mongo_config
+  mongot_data:
+    name: aegisrca_mongot_data
+
+# ── Quick-reference commands ──────────────────────────────────────────────────
+#
+#  Start:
+#    docker compose -f infra/mongodb/docker-compose.yml up -d
+#
+#  Stop:
+#    docker compose -f infra/mongodb/docker-compose.yml down
+#
+#  Follow logs:
+#    docker compose -f infra/mongodb/docker-compose.yml logs -f mongodb
+#
+#  Open mongosh:
+#    docker exec -it aegisrca-mongo mongosh \
+#      --username aegisrca --password dev-only-change-this \
+#      --authenticationDatabase admin
+#
+#  Remove volumes (full reset):
+#    docker compose -f infra/mongodb/docker-compose.yml down -v
+#
+# Connection string for the backend:
+#   MONGODB_URI=mongodb://aegisrca:dev-only-change-this@localhost:27017/?authSource=admin&directConnection=true
+#   MONGODB_DB_NAME=aegisrca
