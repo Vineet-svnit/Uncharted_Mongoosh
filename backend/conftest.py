@@ -2,8 +2,11 @@
 import sys
 import os
 
-# Ensure 'backend' directory is on the path so `from data_layer import ...` works
-backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if backend_dir not in sys.path:
-    sys.path.insert(0, backend_dir)
+# Ensure 'backend' directory and root are on the path
+cur_dir = os.path.abspath(os.path.dirname(__file__))
+parent_dir = os.path.abspath(os.path.join(cur_dir, ".."))
+for p in [cur_dir, parent_dir]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
 

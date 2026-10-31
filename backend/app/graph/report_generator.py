@@ -6,7 +6,7 @@ Produces the final structured InvestigationReport schema with validated citation
 from typing import Any
 import logging
 from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
+from app.graph.llm_factory import get_llm
 
 from app.config import settings
 from app.graph.state import AgentState
@@ -178,14 +178,10 @@ def generate_report(state: AgentState) -> dict[str, Any]:
 
     report: InvestigationReport | None = None
 
-    if settings.gemini_api_key and settings.gemini_api_key != "your_gemini_api_key":
+    llm = get_llm(temperature=0.0)
+    if llm:
         try:
-            llm = ChatGoogleGenerativeAI(
-                model=settings.gemini_model,
-                google_api_key=settings.gemini_api_key,
-                temperature=0.1,
-            )
-            structured_llm = llm.with_structured_output(InvestigationReport)
+            structured_llm = llm.with_structured_output(InvestigationReport, method="function_calling")
             summary_evd = [
                 f"[{e.evidence_id}] ({e.source_type}) {e.title}: {e.content}"
                 for e in evidence_items

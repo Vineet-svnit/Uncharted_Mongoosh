@@ -115,7 +115,7 @@ export const InvestigationActivity: React.FC<InvestigationActivityProps> = ({
             </span>
           )}
           <Badge variant="outline" size="sm" className="font-mono text-[10px]">
-            {toolExecutions.length} tools executed
+            {toolExecutions.filter(t => t.status === 'completed').length} tools executed
           </Badge>
         </div>
       </div>
@@ -129,7 +129,7 @@ export const InvestigationActivity: React.FC<InvestigationActivityProps> = ({
           </div>
         )}
 
-        {toolExecutions.map((item) => {
+        {toolExecutions.filter((item) => isStreaming || item.status === 'completed').map((item) => {
           const isCompleted = item.status === "completed";
           const isRunning = item.status === "running";
           const isFailed = item.status === "failed";

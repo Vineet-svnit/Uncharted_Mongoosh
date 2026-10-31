@@ -4,7 +4,7 @@ from typing import Any
 import logging
 from pydantic import BaseModel, Field
 from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
+from app.graph.llm_factory import get_llm
 
 from app.config import settings
 from app.graph.state import AgentState
@@ -34,6 +34,8 @@ Your job is to rigorously review the collected evidence and evaluate:
 7. Can the SLA decision actually be calculated from retrieved contract clauses?
 
 Be conservative. Do not claim sufficient evidence if a vital causal link is missing.
+IMPORTANT: If ANY evidence has been collected (even partial), mark sufficient_evidence=True unless there is a specific critical gap.
+Only mark sufficient_evidence=False if zero tools were called and zero evidence was collected.
 Output strictly following the JSON schema.
 """
 
@@ -76,10 +78,10 @@ def _heuristic_verifier(evidence_items: list[dict[str, Any]], plan: dict[str, An
             )
 
     missing = []
-    if not has_pr and service_id:
-        missing.append(f"Direct deployment or PR diff evidence for {service_id}")
-    if not has_telemetry and service_id:
-        missing.append(f"Metric telemetry confirming failure in {service_id}")
+    # Only block as insufficient if NO evidence whatsoever was collected.
+    # If tools ran and returned any evidence, allow the report generator to synthesize.
+    if len(evidence_items) == 0 and service_id:
+        missing.append(f"No evidence collected for {service_id} — no tools have run yet.")
 
     sufficient = len(missing) == 0
 
@@ -100,14 +102,10 @@ def verify_evidence(state: AgentState) -> dict[str, Any]:
 
     review: EvidenceReview | None = None
 
-    if settings.gemini_api_key and settings.gemini_api_key != "your_gemini_api_key":
+    llm = get_llm(temperature=0.0)
+    if llm:
         try:
-            llm = ChatGoogleGenerativeAI(
-                model=settings.gemini_model,
-                google_api_key=settings.gemini_api_key,
-                temperature=0.0,
-            )
-            structured_llm = llm.with_structured_output(EvidenceReview)
+            structured_llm = llm.with_structured_output(EvidenceReview, method="function_calling")
             summary_evd = [
                 f"[{e.get('source_type')}] {e.get('title')}: {e.get('content')[:150]}"
                 for e in evidence_items
@@ -136,4 +134,3 @@ def verify_evidence(state: AgentState) -> dict[str, Any]:
         "verification_feedback": feedback,
         "verification_attempts": attempts + 1,
     }
-

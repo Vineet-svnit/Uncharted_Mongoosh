@@ -3,25 +3,21 @@
 import React, { useState } from "react";
 import {
   FileText,
-  Activity,
-  Network,
   Clock,
-  ShieldAlert,
+  Network,
   Layers,
-  Scale,
-  CheckSquare,
   BarChart2,
-  ExternalLink,
   ZoomIn,
   Copy,
   Check,
-  X,
   FileCode,
+  Sliders,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import {
   InvestigationResult,
   EvidenceItem,
-  TelemetryPoint,
 } from "@/types/investigation";
 import { RootCauseCard } from "./RootCauseCard";
 import { IncidentTimeline } from "./IncidentTimeline";
@@ -52,6 +48,8 @@ interface InvestigationReportProps {
   inspectedEvidence: EvidenceItem | null;
   onCloseInspectedEvidence: () => void;
   onSelectEvidence: (evidence: EvidenceItem) => void;
+  inspectorWidth?: number;
+  onWidthChange?: (width: number) => void;
 }
 
 export const InvestigationReport: React.FC<InvestigationReportProps> = ({
@@ -59,10 +57,14 @@ export const InvestigationReport: React.FC<InvestigationReportProps> = ({
   inspectedEvidence,
   onCloseInspectedEvidence,
   onSelectEvidence,
+  inspectorWidth = 520,
+  onWidthChange,
 }) => {
   const [activeTab, setActiveTab] = useState<
     "overview" | "timeline" | "topology" | "evidence" | "telemetry"
   >("overview");
+
+  const [isSummaryExpanded, setIsSummaryExpanded] = useState<boolean>(false);
 
   // Zoomed visual image modal
   const [zoomedImage, setZoomedImage] = useState<{
@@ -97,11 +99,14 @@ export const InvestigationReport: React.FC<InvestigationReportProps> = ({
     }
   };
 
+  const isSummaryLong = (result.summary || "").length > 180;
+
   return (
     <div className="flex flex-col h-full bg-dark-surface overflow-hidden">
-      {/* Top Inspector Header with incident summary */}
-      <div className="p-4 border-b border-dark-border bg-dark-surfaceSecondary/40 shrink-0">
-        <div className="flex items-center justify-between mb-2">
+      {/* Top Inspector Header */}
+      <div className="p-4 border-b border-dark-border bg-dark-surfaceSecondary/40 shrink-0 space-y-3">
+        {/* Title, Incident ID & Status Badges */}
+        <div className="flex items-center justify-between gap-2 flex-wrap">
           <div className="flex items-center gap-2">
             <span className="text-xs font-mono font-bold uppercase tracking-wider text-accent-primary">
               Investigation Inspector
@@ -112,32 +117,114 @@ export const InvestigationReport: React.FC<InvestigationReportProps> = ({
               </Badge>
             )}
           </div>
-          <Badge
-            variant={
-              result.investigation_status === "completed"
-                ? "success"
-                : result.investigation_status === "failed"
-                ? "danger"
-                : "warning"
-            }
-            size="sm"
-            className="font-mono text-[10px] uppercase"
-          >
-            {result.investigation_status}
-          </Badge>
+
+          <div className="flex items-center gap-2">
+            <Badge
+              variant={
+                result.investigation_status === "completed"
+                  ? "success"
+                  : result.investigation_status === "failed"
+                  ? "danger"
+                  : "warning"
+              }
+              size="sm"
+              className="font-mono text-[10px] uppercase font-bold"
+            >
+              {result.investigation_status}
+            </Badge>
+          </div>
         </div>
 
-        <p className="text-xs text-slate-300 line-clamp-2 leading-relaxed">
-          {result.summary}
-        </p>
+        {/* Width Slider & Quick S/M/L Presets */}
+        {onWidthChange && (
+          <div className="flex items-center justify-between gap-2 pt-1 pb-1 border-y border-dark-border/40 text-xs text-slate-muted">
+            <div className="flex items-center gap-2">
+              <Sliders className="h-3.5 w-3.5 text-accent-primary shrink-0" />
+              <span className="text-[10px] font-mono shrink-0">
+                Width: {inspectorWidth}px
+              </span>
+              <input
+                type="range"
+                min={380}
+                max={920}
+                step={20}
+                value={inspectorWidth}
+                onChange={(e) => onWidthChange(Number(e.target.value))}
+                className="w-20 sm:w-28 h-1.5 bg-dark-border rounded-lg appearance-none cursor-pointer accent-sky-400"
+                title="Slide to adjust inspector width"
+              />
+            </div>
 
-        {/* Tab Navigation */}
-        <div className="flex items-center gap-1 mt-3 pt-2 border-t border-dark-border/40 overflow-x-auto no-scrollbar text-xs">
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => onWidthChange(420)}
+                className={`px-1.5 py-0.5 text-[9px] font-mono rounded border transition-colors ${
+                  inspectorWidth <= 460
+                    ? "border-sky-500 bg-sky-500/20 text-sky-300 font-bold"
+                    : "border-dark-border text-slate-muted hover:text-slate-text"
+                }`}
+                title="Compact (420px)"
+              >
+                S
+              </button>
+              <button
+                onClick={() => onWidthChange(580)}
+                className={`px-1.5 py-0.5 text-[9px] font-mono rounded border transition-colors ${
+                  inspectorWidth > 460 && inspectorWidth <= 680
+                    ? "border-sky-500 bg-sky-500/20 text-sky-300 font-bold"
+                    : "border-dark-border text-slate-muted hover:text-slate-text"
+                }`}
+                title="Balanced (580px)"
+              >
+                M
+              </button>
+              <button
+                onClick={() => onWidthChange(800)}
+                className={`px-1.5 py-0.5 text-[9px] font-mono rounded border transition-colors ${
+                  inspectorWidth > 680
+                    ? "border-sky-500 bg-sky-500/20 text-sky-300 font-bold"
+                    : "border-dark-border text-slate-muted hover:text-slate-text"
+                }`}
+                title="Wide (800px)"
+              >
+                L
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Executive Summary */}
+        <div>
+          <p className={`text-xs text-slate-300 leading-relaxed font-sans ${!isSummaryExpanded && isSummaryLong ? "line-clamp-2" : ""}`}>
+            {result.summary}
+          </p>
+          {isSummaryLong && (
+            <button
+              onClick={() => setIsSummaryExpanded(!isSummaryExpanded)}
+              className="mt-1 text-[11px] font-mono text-accent-primary hover:underline flex items-center gap-1"
+            >
+              {isSummaryExpanded ? (
+                <>
+                  <span>Show less</span>
+                  <ChevronUp className="h-3 w-3" />
+                </>
+              ) : (
+                <>
+                  <span>Read full summary</span>
+                  <ChevronDown className="h-3 w-3" />
+                </>
+              )}
+            </button>
+          )}
+        </div>
+
+        {/* Tab Navigation Bar */}
+        <div className="flex items-center gap-1.5 pt-1 overflow-x-auto no-scrollbar text-xs">
           <button
             onClick={() => setActiveTab("overview")}
-            className={`px-3 py-1.5 rounded-md font-medium text-xs transition-colors flex items-center gap-1.5 whitespace-nowrap ${
+            className={`px-3 py-1.5 rounded-lg font-medium text-xs transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeTab === "overview"
-                ? "bg-dark-surface text-accent-primary border border-dark-border shadow-xs"
+                ? "bg-dark-surface text-accent-primary border border-dark-border shadow-xs font-semibold"
                 : "text-slate-muted hover:text-slate-text hover:bg-dark-surface/50"
             }`}
           >
@@ -147,21 +234,24 @@ export const InvestigationReport: React.FC<InvestigationReportProps> = ({
 
           <button
             onClick={() => setActiveTab("timeline")}
-            className={`px-3 py-1.5 rounded-md font-medium text-xs transition-colors flex items-center gap-1.5 whitespace-nowrap ${
+            className={`px-3 py-1.5 rounded-lg font-medium text-xs transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeTab === "timeline"
-                ? "bg-dark-surface text-accent-primary border border-dark-border shadow-xs"
+                ? "bg-dark-surface text-accent-primary border border-dark-border shadow-xs font-semibold"
                 : "text-slate-muted hover:text-slate-text hover:bg-dark-surface/50"
             }`}
           >
             <Clock className="h-3.5 w-3.5" />
-            <span>Timeline ({result.timeline?.length || 0})</span>
+            <span>Timeline</span>
+            <span className="px-1.5 py-0.2 rounded-full bg-dark-bg border border-dark-border text-[10px] font-mono">
+              {result.timeline?.length || 0}
+            </span>
           </button>
 
           <button
             onClick={() => setActiveTab("topology")}
-            className={`px-3 py-1.5 rounded-md font-medium text-xs transition-colors flex items-center gap-1.5 whitespace-nowrap ${
+            className={`px-3 py-1.5 rounded-lg font-medium text-xs transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeTab === "topology"
-                ? "bg-dark-surface text-accent-primary border border-dark-border shadow-xs"
+                ? "bg-dark-surface text-accent-primary border border-dark-border shadow-xs font-semibold"
                 : "text-slate-muted hover:text-slate-text hover:bg-dark-surface/50"
             }`}
           >
@@ -171,27 +261,26 @@ export const InvestigationReport: React.FC<InvestigationReportProps> = ({
 
           <button
             onClick={() => setActiveTab("evidence")}
-            className={`px-3 py-1.5 rounded-md font-medium text-xs transition-colors flex items-center gap-1.5 whitespace-nowrap ${
+            className={`px-3 py-1.5 rounded-lg font-medium text-xs transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeTab === "evidence"
-                ? "bg-dark-surface text-accent-primary border border-dark-border shadow-xs"
+                ? "bg-dark-surface text-accent-primary border border-dark-border shadow-xs font-semibold"
                 : "text-slate-muted hover:text-slate-text hover:bg-dark-surface/50"
             }`}
           >
             <Layers className="h-3.5 w-3.5" />
-            <span>
-              Evidence (
+            <span>Evidence</span>
+            <span className="px-1.5 py-0.2 rounded-full bg-dark-bg border border-dark-border text-[10px] font-mono">
               {(result.supporting_evidence?.length || 0) +
                 (result.contradicting_evidence?.length || 0)}
-              )
             </span>
           </button>
 
           {hasTelemetrySeries && (
             <button
               onClick={() => setActiveTab("telemetry")}
-              className={`px-3 py-1.5 rounded-md font-medium text-xs transition-colors flex items-center gap-1.5 whitespace-nowrap ${
+              className={`px-3 py-1.5 rounded-lg font-medium text-xs transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
                 activeTab === "telemetry"
-                  ? "bg-dark-surface text-accent-primary border border-dark-border shadow-xs"
+                  ? "bg-dark-surface text-accent-primary border border-dark-border shadow-xs font-semibold"
                   : "text-slate-muted hover:text-slate-text hover:bg-dark-surface/50"
               }`}
             >
@@ -203,7 +292,7 @@ export const InvestigationReport: React.FC<InvestigationReportProps> = ({
       </div>
 
       {/* Tab Panels */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-5">
+      <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-5">
         {/* TAB 1: OVERVIEW */}
         {activeTab === "overview" && (
           <div className="space-y-5">
@@ -552,4 +641,3 @@ export const InvestigationReport: React.FC<InvestigationReportProps> = ({
     </div>
   );
 };
-

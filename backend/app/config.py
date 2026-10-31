@@ -15,8 +15,16 @@ class Settings(BaseSettings):
         alias="MONGODB_URI",
     )
     mongodb_db_name: str = Field(default="aegisrca", alias="MONGODB_DB_NAME")
+    
+    # Google Gemini
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
     gemini_model: str = Field(default="gemini-2.5-flash", alias="GEMINI_MODEL")
+    
+    # OpenAI toggle and configuration
+    use_openai: bool = Field(default=False, alias="USE_OPENAI")
+    openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
+    openai_model: str = Field(default="gpt-4.1-mini", alias="OPENAI_MODEL")
+
     frontend_origin: str = Field(default="http://localhost:3000", alias="FRONTEND_ORIGIN")
     max_tool_iterations: int = Field(default=6, alias="MAX_TOOL_ITERATIONS")
     max_tools_per_turn: int = Field(default=10, alias="MAX_TOOLS_PER_TURN")
@@ -24,9 +32,9 @@ class Settings(BaseSettings):
     max_history_messages: int = Field(default=20, alias="MAX_HISTORY_MESSAGES")
     debug: bool = Field(default=True, alias="DEBUG")
 
-    @field_validator("debug", mode="before")
+    @field_validator("debug", "use_openai", mode="before")
     @classmethod
-    def parse_debug(cls, v):
+    def parse_bools(cls, v):
         if isinstance(v, str):
             return v.lower() in ("true", "1", "t", "yes", "debug")
         return bool(v)
