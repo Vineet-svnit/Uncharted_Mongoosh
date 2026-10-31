@@ -1,0 +1,129 @@
+
+# ==============================
+# Environment variables & secrets
+# ==============================
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# ==============================
+# Python cache & compiled files
+# ==============================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# ==============================
+# Virtual environments
+# ==============================
+venv/
+.venv/
+env/
+ENV/
+.conda/
+
+# ==============================
+# Python packaging
+# ==============================
+build/
+dist/
+*.egg-info/
+.eggs/
+wheels/
+pip-wheel-metadata/
+
+# ==============================
+# IDE & editor files
+# ==============================
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# ==============================
+# Logs & temporary files
+# ==============================
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+
+# ==============================
+# Testing & coverage
+# ==============================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+
+# ==============================
+# Jupyter notebooks
+# ==============================
+.ipynb_checkpoints/
+
+# ==============================
+# ML models & downloaded weights
+# ==============================
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.safetensors
+*.bin
+*.gguf
+models/
+checkpoints/
+weights/
+
+# ==============================
+# Embeddings & vector databases
+# ==============================
+chroma_db/
+chroma_data/
+faiss_index/
+vector_store/
+qdrant_storage/
+*.faiss
+
+# ==============================
+# LangGraph local data
+# ==============================
+.langgraph_api/
+langgraph_data/
+
+# ==============================
+# Local databases
+# ==============================
+*.sqlite
+*.sqlite3
+*.db
+
+# ==============================
+# Uploaded files & generated data
+# ==============================
+uploads/
+storage/
+generated/
+data/
+datasets/
+
+# ==============================
+# Type checking & linting
+# ==============================
+.mypy_cache/
+.pyright/
+.ruff_cache/
+
+# ==============================
+# OS files
+# ==============================
+Thumbs.db
+Desktop.ini
