@@ -31,17 +31,30 @@ class EvidenceService:
                 verified_citations.append(cit)
 
         # If LLM didn't attach citation details or empty, populate directly from collected evidence
+        # preserving the complete evidence item structure so drawer and inspector never lose content
         if not verified_citations and collected_evidence:
-            for ev in collected_evidence[:10]:
-                verified_citations.append(
-                    {
-                        "evidence_id": ev.evidence_id,
-                        "source_type": ev.source_type,
-                        "source_id": ev.source_id,
-                        "title": ev.title,
-                        "citation": ev.citation if isinstance(ev.citation, dict) else (ev.citation.model_dump() if ev.citation else {}),
-                    }
-                )
+            for ev in collected_evidence:
+                if hasattr(ev, "model_dump"):
+                    verified_citations.append(ev.model_dump(mode="json"))
+                elif isinstance(ev, dict):
+                    verified_citations.append(dict(ev))
+                else:
+                    verified_citations.append({
+                        "evidence_id": getattr(ev, "evidence_id", "EVD-000"),
+                        "source_type": getattr(ev, "source_type", "document"),
+                        "source_id": getattr(ev, "source_id", "unknown"),
+                        "title": getattr(ev, "title", "Evidence"),
+                        "content": getattr(ev, "content", ""),
+                        "service_id": getattr(ev, "service_id", None),
+                        "timestamp": getattr(ev, "timestamp", None),
+                        "citation": getattr(ev, "citation", None),
+                        "retrieval_method": getattr(ev, "retrieval_method", "direct"),
+                        "relevance_score": getattr(ev, "relevance_score", 0.9),
+                        "classification": getattr(ev, "classification", "supporting"),
+                        "asset_file_id": getattr(ev, "asset_file_id", None),
+                        "source_status": getattr(ev, "source_status", "verified"),
+                        "claim_support": getattr(ev, "claim_support", "supported"),
+                    })
 
         return verified_citations
 
@@ -58,4 +71,3 @@ class EvidenceService:
             for e in evidence_items
             if e.classification in [EvidenceClassification.SUPPORTING, EvidenceClassification.CONTEXTUAL]
         ]
-

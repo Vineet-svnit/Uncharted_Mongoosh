@@ -124,14 +124,35 @@ class InvestigationService:
                                     )
 
                         elif node_name == "tools":
+                            tool_msgs = node_output.get("messages", [])
                             ev_items = node_output.get("evidence_items", [])
-                            yield self._sse_pack(
-                                "tool_completed",
-                                {
-                                    "tool": "investigation_tools",
-                                    "evidence_count": len(ev_items),
-                                },
-                            )
+                            if tool_msgs:
+                                # Distribute evidence items evenly across the tools that ran this batch
+                                batch_ev_count = len(ev_items)
+                                per_tool_count = max(1, batch_ev_count // len(tool_msgs)) if batch_ev_count > 0 else 0
+                                for idx, tm in enumerate(tool_msgs):
+                                    t_name = getattr(tm, "name", None) or "investigation_tool"
+                                    # Last tool in batch gets any remainder
+                                    ev_for_this = (
+                                        batch_ev_count - per_tool_count * (len(tool_msgs) - 1)
+                                        if idx == len(tool_msgs) - 1
+                                        else per_tool_count
+                                    ) if batch_ev_count > 0 else 0
+                                    yield self._sse_pack(
+                                        "tool_completed",
+                                        {
+                                            "tool": t_name,
+                                            "evidence_count": ev_for_this,
+                                        },
+                                    )
+                            else:
+                                yield self._sse_pack(
+                                    "tool_completed",
+                                    {
+                                        "tool": "investigation_tools",
+                                        "evidence_count": len(ev_items),
+                                    },
+                                )
 
                         elif node_name == "verifier":
                             yield self._sse_pack(
@@ -218,4 +239,3 @@ class InvestigationService:
 
 
 investigation_service = InvestigationService()
-

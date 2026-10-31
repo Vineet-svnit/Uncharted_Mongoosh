@@ -2,6 +2,7 @@
 
 import React, { useRef, useEffect } from "react";
 import { ChatMessage as ChatMessageType, ToolExecution, InvestigationStage } from "@/types/chat";
+import { InvestigationResult } from "@/types/investigation";
 import { ChatMessage } from "./ChatMessage";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { MessageInput } from "./MessageInput";
@@ -23,7 +24,8 @@ interface ChatWindowProps {
   onSendMessage: (message: string) => void;
   onCancelStream: () => void;
   onCitationClick: (evidenceId: string) => void;
-  onOpenInspector: () => void;
+  /** Called when user clicks "Examine Inspector" on a specific message — passes that message's result */
+  onOpenInspectorForResult: (result: InvestigationResult) => void;
   onRetry?: () => void;
 }
 
@@ -39,7 +41,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   onSendMessage,
   onCancelStream,
   onCitationClick,
-  onOpenInspector,
+  onOpenInspectorForResult,
   onRetry,
 }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -66,13 +68,17 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             <WelcomeScreen onSelectPrompt={onSendMessage} />
           ) : (
             <div className="space-y-4 pb-4">
-              {/* Message List */}
+              {/* Message List — each assistant message carries its own result */}
               {messages.map((msg) => (
                 <ChatMessage
                   key={msg.message_id}
                   message={msg}
                   onCitationClick={onCitationClick}
-                  onOpenInspector={onOpenInspector}
+                  onOpenInspector={
+                    msg.metadata?.investigation_result
+                      ? onOpenInspectorForResult
+                      : undefined
+                  }
                 />
               ))}
 
@@ -128,4 +134,3 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     </div>
   );
 };
-

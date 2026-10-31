@@ -44,6 +44,11 @@ class _Config:
             os.environ.get("EMBEDDING_DIMENSIONS", "1024")
         )
     )
+    voyage_rerank_model: str = field(
+        default_factory=lambda: os.environ.get(
+            "VOYAGE_RERANK_MODEL", "rerank-2"
+        )
+    )
 
     # ── Collections ────────────────────────────────────────────────────────────
     col_services: str = "services"

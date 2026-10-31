@@ -14,6 +14,9 @@ import {
   Sliders,
   ChevronDown,
   ChevronUp,
+  Image as ImageIcon,
+  ExternalLink,
+  ShieldAlert,
 } from "lucide-react";
 import {
   InvestigationResult,
@@ -26,6 +29,7 @@ import { EvidenceList } from "./EvidenceList";
 import { ContradictionCard } from "./ContradictionCard";
 import { SLAAssessment } from "./SLAAssessment";
 import { Recommendations } from "./Recommendations";
+import { VisualEvidenceGallery } from "./VisualEvidenceGallery";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
@@ -61,7 +65,7 @@ export const InvestigationReport: React.FC<InvestigationReportProps> = ({
   onWidthChange,
 }) => {
   const [activeTab, setActiveTab] = useState<
-    "overview" | "timeline" | "topology" | "evidence" | "telemetry"
+    "overview" | "timeline" | "topology" | "evidence" | "visual" | "telemetry"
   >("overview");
 
   const [isSummaryExpanded, setIsSummaryExpanded] = useState<boolean>(false);
@@ -86,6 +90,12 @@ export const InvestigationReport: React.FC<InvestigationReportProps> = ({
 
   const hasTelemetrySeries =
     result.telemetry_series && result.telemetry_series.length > 0;
+
+  const hasVisualEvidence =
+    (result.visual_evidence_entries && result.visual_evidence_entries.length > 0) ||
+    [...(result.supporting_evidence || []), ...(result.contradicting_evidence || [])].some(
+      (e) => e?.asset_file_id || e?.source_type?.includes("grafana")
+    );
 
   const findEvidenceById = (evId: string) => {
     const all = [
@@ -275,6 +285,23 @@ export const InvestigationReport: React.FC<InvestigationReportProps> = ({
             </span>
           </button>
 
+          {hasVisualEvidence && (
+            <button
+              onClick={() => setActiveTab("visual")}
+              className={`px-3 py-1.5 rounded-lg font-medium text-xs transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                activeTab === "visual"
+                  ? "bg-dark-surface text-accent-primary border border-dark-border shadow-xs font-semibold"
+                  : "text-slate-muted hover:text-slate-text hover:bg-dark-surface/50"
+              }`}
+            >
+              <ImageIcon className="h-3.5 w-3.5" />
+              <span>Visual</span>
+              <span className="px-1.5 py-0.2 rounded-full bg-dark-bg border border-dark-border text-[10px] font-mono">
+                {result.visual_evidence_entries?.length || 0}
+              </span>
+            </button>
+          )}
+
           {hasTelemetrySeries && (
             <button
               onClick={() => setActiveTab("telemetry")}
@@ -319,6 +346,27 @@ export const InvestigationReport: React.FC<InvestigationReportProps> = ({
             {result.recommendations && result.recommendations.length > 0 && (
               <Recommendations recommendations={result.recommendations} />
             )}
+
+            {/* 5. Citation Coverage chip */}
+            {result.citation_coverage && result.citation_coverage.total_factual_claims > 0 && (
+              <div className="p-3 rounded-xl border border-dark-border bg-dark-bg/60 text-xs">
+                <div className="flex items-center justify-between text-slate-muted mb-1.5">
+                  <span className="font-semibold text-slate-text">Citation Coverage</span>
+                  <span className="font-mono text-[10px]">
+                    {result.citation_coverage.grounded_claims}/{result.citation_coverage.total_factual_claims} grounded
+                  </span>
+                </div>
+                <div className="h-1.5 bg-dark-border rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-sky-500 rounded-full"
+                    style={{ width: `${result.citation_coverage.percentage}%` }}
+                  />
+                </div>
+                <div className="mt-1 text-[10px] text-slate-muted font-mono">
+                  {result.citation_coverage.percentage}% evidence-grounded
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -354,7 +402,14 @@ export const InvestigationReport: React.FC<InvestigationReportProps> = ({
           />
         )}
 
-        {/* TAB 5: TELEMETRY (Recharts) */}
+        {/* TAB 5: VISUAL EVIDENCE */}
+        {activeTab === "visual" && (
+          <VisualEvidenceGallery
+            entries={result.visual_evidence_entries || []}
+          />
+        )}
+
+        {/* TAB 6: TELEMETRY (Recharts) */}
         {activeTab === "telemetry" && hasTelemetrySeries && (
           <div className="space-y-4">
             <div className="flex items-center justify-between text-xs text-slate-muted">
@@ -480,11 +535,41 @@ export const InvestigationReport: React.FC<InvestigationReportProps> = ({
                     ? "success"
                     : inspectedEvidence.classification === "contradicting"
                     ? "danger"
+                    : inspectedEvidence.classification === "contextual"
+                    ? "info"
                     : "default"
                 }
                 size="sm"
               >
                 {inspectedEvidence.classification || "Supporting"}
+              </Badge>
+              {/* Separate Source Verification dimension */}
+              <Badge
+                variant={
+                  inspectedEvidence.source_status === "verified" || !inspectedEvidence.source_status
+                    ? "success"
+                    : "danger"
+                }
+                size="sm"
+              >
+                {inspectedEvidence.source_status === "unavailable"
+                  ? "✗ Source: Unavailable"
+                  : "✓ Source: Verified (DB / GridFS)"}
+              </Badge>
+              {/* Separate Claim Support dimension */}
+              <Badge
+                variant={
+                  inspectedEvidence.claim_support === "supported" || !inspectedEvidence.claim_support
+                    ? "success"
+                    : inspectedEvidence.claim_support === "partially_supported"
+                    ? "info"
+                    : inspectedEvidence.claim_support === "contradicted"
+                    ? "danger"
+                    : "warning"
+                }
+                size="sm"
+              >
+                Claim Support: {inspectedEvidence.claim_support || "supported"}
               </Badge>
               {inspectedEvidence.retrieval_method && (
                 <span className="text-[10px] font-mono text-slate-muted">
@@ -555,8 +640,10 @@ export const InvestigationReport: React.FC<InvestigationReportProps> = ({
                   <span>{copiedSnippet ? "Copied" : "Copy"}</span>
                 </button>
               </div>
-              <div className="p-3 rounded-lg bg-dark-bg/90 border border-dark-border text-slate-200 font-mono text-xs leading-relaxed whitespace-pre-wrap">
-                {inspectedEvidence.content}
+              <div className="p-3 rounded-lg bg-dark-bg/90 border border-dark-border text-slate-200 font-mono text-xs leading-relaxed whitespace-pre-wrap min-h-[40px]">
+                {inspectedEvidence.content || (
+                  <span className="text-slate-600 italic">No content extracted</span>
+                )}
               </div>
             </div>
 
@@ -577,13 +664,28 @@ export const InvestigationReport: React.FC<InvestigationReportProps> = ({
                   <div>
                     <span className="text-slate-muted">Lines: </span>
                     <span>
-                      {(inspectedEvidence.citation as any).line_start !== undefined
+                      {(inspectedEvidence.citation as any).line_start !== undefined &&
+                      (inspectedEvidence.citation as any).line_start !== null
                         ? `L${(inspectedEvidence.citation as any).line_start} - L${
                             (inspectedEvidence.citation as any).line_end
                           }`
                         : "Full Document"}
                     </span>
                   </div>
+                  {(inspectedEvidence.citation as any).page && (
+                    <div>
+                      <span className="text-slate-muted">Page: </span>
+                      <span className="text-sky-300">
+                        {(inspectedEvidence.citation as any).page}
+                      </span>
+                    </div>
+                  )}
+                  {(inspectedEvidence.citation as any).clause && (
+                    <div>
+                      <span className="text-slate-muted">Clause: </span>
+                      <span>{(inspectedEvidence.citation as any).clause}</span>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -604,6 +706,14 @@ export const InvestigationReport: React.FC<InvestigationReportProps> = ({
                     : "Not specified"}
                 </span>
               </div>
+              {inspectedEvidence.relevance_score !== undefined && inspectedEvidence.relevance_score !== null && (
+                <div>
+                  <span>Relevance: </span>
+                  <span className="font-mono text-slate-text">
+                    {(inspectedEvidence.relevance_score * 100).toFixed(0)}%
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         )}

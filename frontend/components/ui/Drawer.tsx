@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -21,6 +22,12 @@ export const Drawer: React.FC<DrawerProps> = ({
   children,
   width = "lg",
 }) => {
+  const [mounted, setMounted] = useState<boolean>(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -35,7 +42,7 @@ export const Drawer: React.FC<DrawerProps> = ({
     };
   }, [isOpen, onClose]);
 
-  if (!isOpen) return null;
+  if (!isOpen || !mounted) return null;
 
   const widths = {
     md: "max-w-md",
@@ -44,11 +51,11 @@ export const Drawer: React.FC<DrawerProps> = ({
     "2xl": "max-w-2xl",
   };
 
-  return (
-    <div className="fixed inset-0 z-50 overflow-hidden">
+  const drawerContent = (
+    <div className="fixed inset-0 z-[9999] overflow-hidden">
       {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs transition-opacity animate-in fade-in duration-200"
+        className="fixed inset-0 bg-slate-950/75 backdrop-blur-xs transition-opacity animate-in fade-in duration-200"
         onClick={onClose}
       />
 
@@ -60,22 +67,23 @@ export const Drawer: React.FC<DrawerProps> = ({
           )}
         >
           {/* Header */}
-          <div className="flex items-center justify-between border-b border-dark-border px-6 py-4 bg-dark-surfaceSecondary/50">
-            <div>
+          <div className="flex items-center justify-between border-b border-dark-border px-6 py-4 bg-dark-surfaceSecondary/80 shrink-0">
+            <div className="pr-4 min-w-0">
               {title && (
-                <h3 className="text-base font-semibold text-slate-text">
+                <h3 className="text-base font-semibold text-slate-text leading-snug line-clamp-2">
                   {title}
                 </h3>
               )}
               {description && (
-                <p className="mt-0.5 text-xs text-slate-muted">{description}</p>
+                <p className="mt-0.5 text-xs text-slate-muted truncate">{description}</p>
               )}
             </div>
             <button
               onClick={onClose}
-              className="rounded-lg p-1.5 text-slate-muted hover:bg-dark-surfaceSecondary hover:text-slate-text transition-colors"
+              className="rounded-lg p-1.5 text-slate-muted hover:bg-dark-surfaceSecondary hover:text-slate-text transition-colors shrink-0"
+              aria-label="Close drawer"
             >
-              <X className="h-4 w-4" />
+              <X className="h-5 w-5" />
             </button>
           </div>
 
@@ -85,5 +93,6 @@ export const Drawer: React.FC<DrawerProps> = ({
       </div>
     </div>
   );
-};
 
+  return createPortal(drawerContent, document.body);
+};

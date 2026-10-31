@@ -218,6 +218,9 @@ export function getEvidenceAssetUrl(fileId: string): string {
     // Return SVG data URI for demo mock mode
     return `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="800" height="400" viewBox="0 0 800 400"><rect width="800" height="400" fill="%230f172a"/><text x="400" y="50" font-family="sans-serif" font-size="20" font-weight="bold" fill="%2338bdf8" text-anchor="middle">Grafana Dashboard: Redis Connection Saturation &amp; 504 Errors</text><polyline fill="none" stroke="%23fb7185" stroke-width="3" points="50,300 150,300 250,290 320,80 450,75 580,85 650,290 750,300"/><polyline fill="none" stroke="%23f59e0b" stroke-width="2" points="50,320 200,320 300,310 320,120 450,110 580,115 650,315 750,320"/><text x="60" y="90" font-family="sans-serif" font-size="12" fill="%23fb7185">Redis Pool Usage (100% Saturation)</text><text x="60" y="115" font-family="sans-serif" font-size="12" fill="%23f59e0b">Checkout 504 Error Rate (92.4%)</text><line x1="50" y1="330" x2="750" y2="330" stroke="%23334155" stroke-width="1"/><text x="50" y="355" font-family="sans-serif" font-size="11" fill="%2394a3b8">13:50 UTC</text><text x="320" y="355" font-family="sans-serif" font-size="11" fill="%23fb7185">14:01 (Outage Start)</text><text x="650" y="355" font-family="sans-serif" font-size="11" fill="%2334d399">14:24 (Rollback)</text></svg>`;
   }
+  if (typeof window !== "undefined" && API_BASE_URL.includes("localhost") && window.location.hostname !== "localhost") {
+    return `/api/evidence/assets/${fileId}`;
+  }
   return `${API_BASE_URL.replace(/\/$/, "")}/api/evidence/assets/${fileId}`;
 }
 

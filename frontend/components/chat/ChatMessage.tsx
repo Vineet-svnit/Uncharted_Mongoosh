@@ -13,6 +13,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { ChatMessage as ChatMessageType } from "@/types/chat";
+import { InvestigationResult } from "@/types/investigation";
 import { formatTime } from "@/lib/utils";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -20,7 +21,8 @@ import { Button } from "@/components/ui/Button";
 interface ChatMessageProps {
   message: ChatMessageType;
   onCitationClick?: (evidenceId: string) => void;
-  onOpenInspector?: () => void;
+  /** Called with the specific investigation result for this message */
+  onOpenInspector?: (result: InvestigationResult) => void;
 }
 
 export const ChatMessage: React.FC<ChatMessageProps> = ({
@@ -37,13 +39,12 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const invResult = message.metadata?.investigation_result;
+  const invResult = message.metadata?.investigation_result as InvestigationResult | undefined;
 
   // Custom text renderer to intercept [EVD-XXX] citation badges and make them interactive
   const renderContentWithCitations = (text: string) => {
-    // Regex matching [EVD-xxx]
     const citationRegex = /\[(EVD-[A-Za-z0-9_-]+)\]/g;
-    const parts = [];
+    const parts: React.ReactNode[] = [];
     let lastIndex = 0;
     let match;
 
@@ -185,7 +186,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
           )}
         </div>
 
-        {/* Investigation Inspector Action Callout if report available */}
+        {/* Investigation Inspector Action Callout — per-message result */}
         {isAssistant && invResult && onOpenInspector && (
           <div className="mt-3 pt-3 border-t border-dark-border/60 flex flex-wrap items-center justify-between gap-2 bg-dark-surfaceSecondary/40 -mx-4 -mb-3 p-3 rounded-b-2xl">
             <div className="flex items-center gap-2">
@@ -197,7 +198,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
             <Button
               variant="outline"
               size="sm"
-              onClick={onOpenInspector}
+              onClick={() => onOpenInspector(invResult)}
               className="text-xs py-1 h-7 text-accent-primary border-sky-500/30 hover:bg-sky-500/10"
             >
               <span>Examine Inspector</span>
@@ -216,4 +217,3 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
     </div>
   );
 };
-

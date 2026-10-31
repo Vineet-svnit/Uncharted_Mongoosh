@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { ChatMessage } from "@/types/chat";
 import { InvestigationResult, EvidenceItem } from "@/types/investigation";
 import { AssistantResultPayload } from "@/types/api";
@@ -24,23 +24,37 @@ export function useChat(
   const [chatError, setChatError] = useState<string | null>(null);
 
   // Inspector & modal states
+  // selectedResult: the investigation shown in the inspector RIGHT NOW
   const [selectedResult, setSelectedResult] = useState<InvestigationResult | null>(null);
   const [inspectedEvidence, setInspectedEvidence] = useState<EvidenceItem | null>(null);
   const [isInspectorOpen, setIsInspectorOpen] = useState<boolean>(true);
   const [activeInspectorTab, setActiveInspectorTab] = useState<InspectorTab>("overview");
 
   const stream = useInvestigationStream();
+  const isStreamingRef = useRef(stream.isStreaming);
+  isStreamingRef.current = stream.isStreaming;
 
   // Load chronological messages whenever threadId changes
   const loadMessages = useCallback(async (id: string) => {
+    // Avoid wiping optimistic in-flight messages if stream is currently active
+    if (isStreamingRef.current) return;
+
     try {
       setLoadingMessages(true);
       setChatError(null);
       const res = await getThreadMessages(id);
       const loadedMsgs = res.messages || [];
-      setMessages(loadedMsgs);
 
-      // Find the latest message with an investigation result
+      setMessages((prev) => {
+        // If we have temporary optimistic messages that haven't landed in loadedMsgs yet, preserve them
+        const tempUserMsgs = prev.filter((m) => m.message_id.startsWith("temp-user-"));
+        if (tempUserMsgs.length > 0 && loadedMsgs.length === 0) {
+          return prev;
+        }
+        return loadedMsgs;
+      });
+
+      // Find the latest message with an investigation result and show it
       for (let i = loadedMsgs.length - 1; i >= 0; i--) {
         const inv = loadedMsgs[i].metadata?.investigation_result;
         if (inv) {
@@ -99,7 +113,13 @@ export function useChat(
           },
         };
 
-        setMessages((prev) => [...prev, asstMsg]);
+        setMessages((prev) => {
+          // Keep existing messages; ensure optimistic message remains if backend history hasn't been re-fetched
+          const exists = prev.some((m) => m.message_id === asstMsg.message_id);
+          if (exists) return prev;
+          return [...prev, asstMsg];
+        });
+
         if (asstPayload.investigation_result) {
           setSelectedResult(asstPayload.investigation_result);
           setIsInspectorOpen(true);
@@ -112,12 +132,18 @@ export function useChat(
     );
   };
 
-  // Click citation handler: opens evidence detail
+  // Open inspector for a SPECIFIC message's investigation result
+  const openInspectorForMessage = useCallback((result: InvestigationResult) => {
+    setSelectedResult(result);
+    setIsInspectorOpen(true);
+    setInspectedEvidence(null);
+  }, []);
+
+  // Click citation handler: opens evidence detail in inspector drawer
   const handleCitationClick = useCallback(
     (evidenceId: string) => {
       if (!selectedResult) return;
 
-      // Look in supporting, contradicting, and citations lists
       const allEvidence: EvidenceItem[] = [
         ...(selectedResult.supporting_evidence || []),
         ...(selectedResult.contradicting_evidence || []),
@@ -133,7 +159,6 @@ export function useChat(
       if (found) {
         setInspectedEvidence(found);
       } else {
-        // Construct a fallback preview
         setInspectedEvidence({
           evidence_id: evidenceId,
           source_type: "citation",
@@ -161,8 +186,8 @@ export function useChat(
     activeInspectorTab,
     setActiveInspectorTab,
     sendMessage,
+    openInspectorForMessage,
     handleCitationClick,
     refreshMessages: () => threadId && loadMessages(threadId),
   };
 }
-

@@ -1,26 +1,30 @@
-"""AegisRCA Investigation Tools.
+"""Investigation Retrieval Tools for LangGraph Agent.
 
-Specialized LangChain tools wrapping Member 1's retrieval layer via DataLayerAdapter.
+Exposes 9 standard LangChain-compatible tools wrapping the underlying data layer.
+All tools return JSON strings to maintain deterministic agent tool contracts.
 """
 
 from typing import Any
 import json
+import logging
 from langchain_core.tools import tool
 
 from app.services.data_layer_adapter import adapter
 from app.services.sla_service import calculate_sla_assessment
 
+logger = logging.getLogger(__name__)
+
 
 @tool
 def list_known_incidents(date: str | None = None, status: str | None = None) -> str:
-    """Find known incidents matching optional date (YYYY-MM-DD) or status (e.g. 'resolved', 'investigating').
+    """List recorded production incidents, optionally filtered by ISO-8601 date or status.
 
-    Use when the user asks what incidents occurred or asks a vague question about an outage.
+    Args:
+        date: Filter incidents starting on this date (e.g. '2026-10-28').
+        status: Filter by status ('open', 'resolved', 'postmortem').
     """
     try:
         incidents = adapter.list_known_incidents(date=date, status=status)
-        if not incidents:
-            return json.dumps({"status": "empty", "message": "No incidents found matching criteria", "incidents": []})
         return json.dumps({"status": "success", "count": len(incidents), "incidents": incidents})
     except Exception as e:
         return json.dumps({"status": "error", "message": str(e), "incidents": []})
@@ -51,17 +55,17 @@ def trace_service_dependencies(
     """Trace upstream and downstream microservice dependencies and failure chains for a service.
 
     Args:
-        service_id: Target service name, e.g. 'checkout-api' or 'auth-service'.
-        environment: Deployment environment ('production').
-        topology_version: Topology snapshot version ('prod-2026-10-28').
+        service_id: Root service ID to trace (e.g. 'checkout-api', 'auth-service').
+        environment: Topology environment (default: 'production').
+        topology_version: Snapshot tag (default: 'prod-2026-10-28').
     """
     try:
-        topo = adapter.trace_service_dependencies(
+        chain = adapter.trace_service_dependencies(
             service_id=service_id,
             environment=environment,
             topology_version=topology_version,
         )
-        return json.dumps({"status": "success", "topology": topo})
+        return json.dumps({"status": "success", "topology": chain})
     except Exception as e:
         return json.dumps({"status": "error", "message": str(e)})
 
@@ -72,19 +76,21 @@ def find_recent_deployments(
     start: str | None = None,
     end: str | None = None,
 ) -> str:
-    """Search recent code deployments, pull requests (PRs), and configuration changes for a service.
+    """Find CI/CD deployments and GitHub PR merges that occurred around an incident time window.
 
     Args:
-        service_id: Service identifier, e.g. 'auth-service' or 'checkout-api'.
-        start: Optional ISO-8601 start timestamp.
-        end: Optional ISO-8601 end timestamp.
+        service_id: Service ID to check deployments for (e.g. 'auth-service', 'checkout-api').
+        start: Start of time window in ISO-8601 (e.g. '2026-10-28T13:30:00Z').
+        end: End of time window in ISO-8601 (e.g. '2026-10-28T14:30:00Z').
     """
     try:
-        evidence = adapter.find_recent_deployments(service_id=service_id, start=start, end=end)
-        items = [e.model_dump() for e in evidence]
+        evidence = adapter.find_recent_deployments(
+            service_id=service_id, start=start, end=end
+        )
+        items = [e.model_dump(mode="json") for e in evidence]
         return json.dumps({"status": "success", "count": len(items), "deployments": items})
     except Exception as e:
-        return json.dumps({"status": "error", "message": str(e)})
+        return json.dumps({"status": "error", "message": str(e), "deployments": []})
 
 
 @tool
@@ -96,15 +102,15 @@ def search_engineering_knowledge(
     customer_id: str | None = None,
     limit: int = 5,
 ) -> str:
-    """Search engineering documentation, runbooks, historical postmortems, code diffs, and SLA contracts using Hybrid RAG.
+    """Semantic and keyword search over runbooks, postmortems, architecture RFCs, and SLA documentation.
 
     Args:
-        query: Specific semantic retrieval query (e.g. 'Redis pool size configuration change', 'DDoS mitigation runbook').
-        source_type: Optional filter ('runbook', 'postmortem', 'pr_diff', 'contract').
-        service_id: Optional service filter ('auth-service', 'redis-cluster-east').
+        query: Technical search text (e.g. 'Redis connection pool exhaustion', 'runbook auth-service').
+        source_type: Optional filter: 'runbook', 'postmortem', 'architecture_rfc', 'sla_text'.
+        service_id: Optional service filter.
         incident_id: Optional incident filter.
         customer_id: Optional customer filter.
-        limit: Max results (default 5).
+        limit: Max results to return (default: 5).
     """
     try:
         evidence = adapter.search_engineering_knowledge(
@@ -115,27 +121,33 @@ def search_engineering_knowledge(
             customer_id=customer_id,
             limit=limit,
         )
-        items = [e.model_dump() for e in evidence]
+        items = [e.model_dump(mode="json") for e in evidence]
         return json.dumps({"status": "success", "count": len(items), "knowledge_items": items})
     except Exception as e:
-        return json.dumps({"status": "error", "message": str(e)})
+        return json.dumps({"status": "error", "message": str(e), "knowledge_items": []})
 
 
 @tool
-def query_service_telemetry(service_id: str, start: str, end: str) -> str:
-    """Retrieve structured numerical telemetry observations, metrics, error rates, and connection pool utilization.
+def query_service_telemetry(
+    service_id: str,
+    start: str,
+    end: str,
+) -> str:
+    """Retrieve telemetry metrics and error logs for a service during a specific incident window.
 
     Args:
-        service_id: Service to query ('checkout-api', 'auth-service', 'redis-cluster-east').
-        start: ISO-8601 start timestamp (e.g. '2026-10-28T14:00:00Z').
-        end: ISO-8601 end timestamp (e.g. '2026-10-28T14:25:00Z').
+        service_id: Service ID (e.g. 'checkout-api', 'auth-service', 'redis-cluster-east').
+        start: Start timestamp in ISO-8601 (e.g. '2026-10-28T14:00:00Z').
+        end: End timestamp in ISO-8601 (e.g. '2026-10-28T14:25:00Z').
     """
     try:
-        evidence = adapter.query_service_telemetry(service_id=service_id, start=start, end=end)
-        items = [e.model_dump() for e in evidence]
+        evidence = adapter.query_service_telemetry(
+            service_id=service_id, start=start, end=end
+        )
+        items = [e.model_dump(mode="json") for e in evidence]
         return json.dumps({"status": "success", "count": len(items), "telemetry": items})
     except Exception as e:
-        return json.dumps({"status": "error", "message": str(e)})
+        return json.dumps({"status": "error", "message": str(e), "telemetry": []})
 
 
 @tool
@@ -144,19 +156,21 @@ def search_incident_messages(
     incident_id: str | None = None,
     limit: int = 10,
 ) -> str:
-    """Search Slack discussion messages and human hypotheses recorded in incident war rooms.
+    """Search Slack war room communications and engineer discussions for incident context.
 
     Args:
-        query: Search keywords or question ('DDoS', 'Redis connection timeout', '504 errors').
-        incident_id: Optional incident identifier ('INC-2026-10-28-001').
-        limit: Max messages to retrieve (default 10).
+        query: Discussion query (e.g. 'Redis pool', '504', 'DDoS rumors').
+        incident_id: Optional incident ID filter.
+        limit: Max messages to return (default: 10).
     """
     try:
-        evidence = adapter.search_incident_messages(query=query, incident_id=incident_id, limit=limit)
-        items = [e.model_dump() for e in evidence]
+        evidence = adapter.search_incident_messages(
+            query=query, incident_id=incident_id, limit=limit
+        )
+        items = [e.model_dump(mode="json") for e in evidence]
         return json.dumps({"status": "success", "count": len(items), "messages": items})
     except Exception as e:
-        return json.dumps({"status": "error", "message": str(e)})
+        return json.dumps({"status": "error", "message": str(e), "messages": []})
 
 
 @tool
@@ -177,7 +191,6 @@ def retrieve_customer_sla(customer_id: str) -> str:
                 }
             )
 
-        # Retrieve downtime from incident if available (23 minutes for acme-corp in primary scenario)
         downtime_minutes = 23
         assessment = calculate_sla_assessment(
             contract_data=contract_data,
@@ -190,7 +203,10 @@ def retrieve_customer_sla(customer_id: str) -> str:
                 "status": "success",
                 "customer_id": customer_id,
                 "contract_name": contract_data.get("contract_name"),
-                "assessment": assessment.model_dump(),
+                "assessment": assessment.model_dump(mode="json"),
+                "pdf_file_id": contract_data.get("pdf_file_id"),
+                "file_name": contract_data.get("file_name"),
+                "clauses": contract_data.get("clauses", []),
             }
         )
     except Exception as e:
@@ -212,10 +228,10 @@ def search_visual_evidence(
     """
     try:
         evidence = adapter.search_visual_evidence(query=query, incident_id=incident_id, limit=limit)
-        items = [e.model_dump() for e in evidence]
+        items = [e.model_dump(mode="json") for e in evidence]
         return json.dumps({"status": "success", "count": len(items), "visual_evidence": items})
     except Exception as e:
-        return json.dumps({"status": "error", "message": str(e)})
+        return json.dumps({"status": "error", "message": str(e), "visual_evidence": []})
 
 
 ALL_INVESTIGATION_TOOLS = [
@@ -229,4 +245,3 @@ ALL_INVESTIGATION_TOOLS = [
     retrieve_customer_sla,
     search_visual_evidence,
 ]
-

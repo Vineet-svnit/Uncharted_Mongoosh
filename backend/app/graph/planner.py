@@ -4,7 +4,7 @@ from typing import Any
 import json
 import logging
 from pydantic import BaseModel, Field
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from app.graph.llm_factory import get_llm
 
 from app.config import settings
@@ -53,19 +53,21 @@ Known Customers: acme-corp
 - Questions about "database slowdown", "Redis", "connection pool", "504", "timeout", "latency", "slowdown" -> service_id="checkout-api", incident_id="INC-2026-10-28-001"
 - Questions about "auth" or "authentication" failures -> service_id="auth-service"
 - Questions about any deployment without specifying a service -> service_id="checkout-api", incident_id="INC-2026-10-28-001"
-- Historical questions ("have we seen this before", "similar problem") -> intent="historical_rag", required_sources=["runbooks", "postmortems"]
+- Historical questions ("have we seen this before", "similar problem", "experienced before", "happened before", "previous") -> intent="historical_rag", required_sources=["runbooks", "postmortems", "knowledge"]
+- Follow-up questions in an ongoing conversation -> set intent="follow_up_question", PRESERVE the service_id and incident_id from the conversation context
 - ALWAYS populate service_id from the above mapping for any incident/failure/slowdown/error question. Never leave it null for operational questions.
 - Default required_sources for incident_investigation: ["topology", "deployments", "telemetry", "communications"]
+- For historical_rag and follow_up_question: ALSO include ["runbooks", "postmortems", "knowledge"] in required_sources
 
 ## GENERAL RULES
 1. Do not invent IDs or customer names not listed above. Unknown optional fields must be null.
 2. Set needs_clarification=True ONLY if the query is completely ambiguous and cannot be mapped to any known service or incident.
-3. If the user is asking a follow-up question on an ongoing investigation, set intent='follow_up_question' and preserve previous service/incident context.
+3. If the user is asking a follow-up question on an ongoing investigation, set intent='follow_up_question' and ALWAYS preserve previous service/incident context from the conversation history.
 4. Output must strictly follow the JSON schema.
 """
 
 
-def _heuristic_planner(last_query: str) -> InvestigationPlan:
+def _heuristic_planner(last_query: str, prior_incident_id: str | None = None, prior_service_id: str | None = None) -> InvestigationPlan:
     """Deterministic fallback planner when LLM is unavailable or for deterministic tests."""
     q = last_query.lower()
 
@@ -78,12 +80,17 @@ def _heuristic_planner(last_query: str) -> InvestigationPlan:
             required_sources=["incidents"],
         )
 
-    # Historical RAG test
-    if "similar redis problem" in q or "similar problem" in q or "have we encountered" in q or "have we experienced" in q:
+    # Historical RAG / follow-up — include context from prior investigation
+    historical_keywords = [
+        "similar redis problem", "similar problem", "have we encountered", "have we experienced",
+        "before", "previous", "historically", "happened before", "seen before", "prior incident"
+    ]
+    if any(kw in q for kw in historical_keywords):
         return InvestigationPlan(
             intent="historical_rag",
-            service_id="redis-cluster-east",
-            required_sources=["runbooks", "postmortems"],
+            service_id=prior_service_id or "auth-service",
+            incident_id=prior_incident_id,
+            required_sources=["runbooks", "postmortems", "knowledge", "communications"],
             needs_clarification=False,
         )
 
@@ -131,6 +138,12 @@ def _heuristic_planner(last_query: str) -> InvestigationPlan:
         if incident_id is None:
             incident_id = "INC-2026-10-28-001"
 
+    # Fall back to prior context for follow-up questions with no explicit service/incident
+    if service_id is None and prior_service_id:
+        service_id = prior_service_id
+    if incident_id is None and prior_incident_id:
+        incident_id = prior_incident_id
+
     sources = ["topology", "deployments", "telemetry", "communications"]
     if customer_id or "sla" in q or "compensation" in q or "penalty" in q:
         sources.append("sla")
@@ -146,6 +159,18 @@ def _heuristic_planner(last_query: str) -> InvestigationPlan:
     )
 
 
+def _extract_prior_context(messages: list) -> tuple[str | None, str | None]:
+    """Extract previously established incident_id and service_id from message history."""
+    for m in reversed(messages):
+        content = m.content if isinstance(m.content, str) else str(m.content)
+        # Look for investigation plan stored in system/AI messages
+        if "INC-2026-10-28-001" in content:
+            return "INC-2026-10-28-001", "checkout-api"
+        if "auth-service" in content and "redis" in content.lower():
+            return "INC-2026-10-28-001", "auth-service"
+    return None, None
+
+
 def plan_investigation(state: AgentState) -> dict[str, Any]:
     """LangGraph node: formulate the investigation plan."""
     messages = state.get("messages", [])
@@ -155,23 +180,43 @@ def plan_investigation(state: AgentState) -> dict[str, Any]:
             last_user_msg = m.content if isinstance(m.content, str) else str(m.content)
             break
 
+    # Extract context from prior messages for follow-up queries
+    prior_incident_id, prior_service_id = _extract_prior_context(messages)
+
     plan: InvestigationPlan | None = None
 
     llm = get_llm(temperature=0.0)
     if llm:
         try:
             structured_llm = llm.with_structured_output(InvestigationPlan, method="function_calling")
-            plan = structured_llm.invoke(
-                [
-                    SystemMessage(content=PLANNER_PROMPT),
-                    HumanMessage(content=f"User Query: {last_user_msg}"),
-                ]
-            )
+
+            # Build conversation context for planner — include last 3 exchanges
+            planner_msgs = [SystemMessage(content=PLANNER_PROMPT)]
+            # Add recent conversation history (last 6 messages for context)
+            recent = messages[-6:] if len(messages) > 6 else messages
+            for m in recent:
+                role = getattr(m, "type", None) or getattr(m, "role", None)
+                content = m.content if isinstance(m.content, str) else str(m.content)
+                if role in ("human", "user") and content != last_user_msg:
+                    planner_msgs.append(HumanMessage(content=f"[Previous query]: {content}"))
+                elif role in ("ai", "assistant"):
+                    # Summarize AI response for context
+                    summary = content[:300] + "..." if len(content) > 300 else content
+                    planner_msgs.append(AIMessage(content=f"[Previous response summary]: {summary}"))
+
+            # Add prior context hint if available
+            context_hint = ""
+            if prior_incident_id:
+                context_hint = f"\n[Context: Previous investigation was about incident {prior_incident_id}, service {prior_service_id}. If this is a follow-up, preserve that context.]"
+
+            planner_msgs.append(HumanMessage(content=f"User Query: {last_user_msg}{context_hint}"))
+
+            plan = structured_llm.invoke(planner_msgs)
         except Exception as e:
             logger.warning(f"Planner LLM structured invocation failed, falling back to heuristic: {e}")
 
     if plan is None:
-        plan = _heuristic_planner(last_user_msg)
+        plan = _heuristic_planner(last_user_msg, prior_incident_id, prior_service_id)
 
     return {
         "investigation_plan": plan.model_dump(),

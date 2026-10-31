@@ -40,9 +40,10 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState<boolean>(false);
   const [inspectorWidth, setInspectorWidth] = useState<number>(DEFAULT_INSPECTOR_WIDTH);
   const [isDragging, setIsDragging] = useState<boolean>(false);
+  const [isMobileView, setIsMobileView] = useState<boolean>(false);
   const dragRef = useRef<boolean>(false);
 
-  // Load saved width on mount
+  // Load saved width on mount + track mobile view
   useEffect(() => {
     if (typeof window !== "undefined") {
       const saved = localStorage.getItem("aegis_inspector_width");
@@ -52,6 +53,12 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
           setInspectorWidth(parsed);
         }
       }
+
+      // Mobile view detection (Drawer only renders on < 1024px)
+      const checkMobile = () => setIsMobileView(window.innerWidth < 1024);
+      checkMobile();
+      window.addEventListener("resize", checkMobile);
+      return () => window.removeEventListener("resize", checkMobile);
     }
   }, []);
 
@@ -202,18 +209,16 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
             </>
           )}
 
-          {/* Mobile / Tablet Drawer for Inspector */}
-          {isInspectorOpen && enhancedInspectorContent && (
-            <div className="lg:hidden">
-              <Drawer
-                isOpen={isInspectorOpen}
-                onClose={onToggleInspector}
-                title="Investigation Inspector"
-                width="xl"
-              >
-                <div className="-m-6 h-[calc(100vh-60px)]">{enhancedInspectorContent}</div>
-              </Drawer>
-            </div>
+          {/* Mobile / Tablet Drawer for Inspector — only rendered when JS detects < 1024px */}
+          {isInspectorOpen && enhancedInspectorContent && isMobileView && (
+            <Drawer
+              isOpen={isInspectorOpen}
+              onClose={onToggleInspector}
+              title="Investigation Inspector"
+              width="xl"
+            >
+              <div className="-m-6 h-[calc(100vh-60px)]">{enhancedInspectorContent}</div>
+            </Drawer>
           )}
         </div>
       </div>

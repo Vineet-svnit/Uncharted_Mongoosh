@@ -160,3 +160,44 @@ def embed_texts_batched(
             time.sleep(delay_between_batches)
     return all_embeddings
 
+
+
+def rerank_documents(
+    query: str,
+    documents: Sequence[str],
+    top_k: int | None = None,
+    model: str | None = None,
+) -> list[tuple[int, float]]:
+    """
+    Rerank a candidate list of text documents against a query using Voyage AI's reranker.
+    Args:
+        query: User search query
+        documents: List of candidate document text excerpts (top X documents)
+        top_k: Number of reranked documents to return (top Y documents, where X >= Y)
+        model: Rerank model (default: cfg.voyage_rerank_model)
+    Returns:
+        List of (original_index, relevance_score) sorted by score descending.
+    """
+    if not documents:
+        return []
+    if not cfg.voyage_api_key:
+        return [(i, 1.0 - (i * 0.05)) for i in range(min(top_k or len(documents), len(documents)))]
+
+    client = _get_client()
+    model_name = model or cfg.voyage_rerank_model
+
+    def _call():
+        return client.rerank(
+            query=query,
+            documents=list(documents),
+            model=model_name,
+            top_k=top_k or len(documents),
+        )
+
+    try:
+        result = _retry(_call, retries=2)
+        # Voyage AI returns results with .index and .relevance_score
+        return [(r.index, float(r.relevance_score)) for r in result.results]
+    except Exception as exc:
+        logger.warning("Voyage reranker failed or unavailable (%s). Maintaining original hybrid rank order.", exc)
+        return [(i, 1.0 - (i * 0.05)) for i in range(min(top_k or len(documents), len(documents)))]

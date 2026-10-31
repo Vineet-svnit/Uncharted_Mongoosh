@@ -280,6 +280,8 @@ def search_knowledge(
     ]
 
     # --- Combine using native $rankFusion or RRF fusion fallback ---
+    # Retrieve top X candidates (X >= Y) for potential downstream reranking
+    candidate_limit = max(limit * 3, 12)
     results = _execute_hybrid_search(
         col=col,
         vector_pipeline=vector_pipeline,
@@ -287,8 +289,30 @@ def search_knowledge(
         vector_index=cfg.vector_idx_knowledge,
         text_index=cfg.text_idx_knowledge,
         id_field="document_id",
-        limit=limit,
+        limit=candidate_limit,
     )
+
+    # --- Voyage AI Reranker: select top Y (limit) from top X candidate documents ---
+    top_x_docs = results[:candidate_limit]
+    if top_x_docs and cfg.embeddings_available:
+        try:
+            from .embeddings import rerank_documents
+            doc_texts = [
+                f"{d.get('title', '')}\n{d.get('content', '')}"[:1000]
+                for d in top_x_docs
+            ]
+            rerank_scores = rerank_documents(query=query, documents=doc_texts, top_k=limit)
+            reranked_docs = []
+            for orig_idx, score in rerank_scores:
+                if orig_idx < len(top_x_docs):
+                    doc = dict(top_x_docs[orig_idx])
+                    doc["rerank_score"] = score
+                    reranked_docs.append(doc)
+            if reranked_docs:
+                results = reranked_docs
+        except Exception as exc:
+            log.warning("Voyage reranking step bypassed, retaining hybrid rank order: %s", exc)
+
     return [_format_knowledge_result(r) for r in results[:limit]]
 
 
@@ -417,9 +441,10 @@ def _raise_index_error(exc: OperationFailure, index_name: str, collection: str) 
 
 def _format_knowledge_result(doc: dict) -> dict:
     cleaned = _clean(doc)
-    # $rankFusion outputs RRF score; individual pipelines use vector_score / bm25_score
+    # Check Voyage reranker score first, then RRF/vector/BM25
     score = (
-        cleaned.get("score")
+        cleaned.get("rerank_score")
+        or cleaned.get("score")
         or cleaned.get("vector_score")
         or cleaned.get("bm25_score")
     )
@@ -793,21 +818,52 @@ def search_visual_evidence(
 # 9. Visual asset retrieval                                                    #
 # --------------------------------------------------------------------------- #
 
-def get_visual_asset(file_id: str) -> bytes | None:
+def get_visual_asset(file_id: str) -> tuple[bytes, str] | None:
     """
-    Download raw image bytes from GridFS by file ID.
+    Download raw asset bytes from GridFS by file ID.
 
     Args:
         file_id: The string GridFS ObjectId from a visual_evidence record.
 
     Returns:
-        Raw PNG/JPEG bytes, or None if the file is not found.
+        Tuple of (bytes, content_type) or None if the file is not found.
+        content_type is derived from GridFS metadata (mime_type field) or
+        the filename extension, defaulting to 'image/png'.
     """
     gfs = get_gridfs()
     try:
         oid = ObjectId(file_id)
         grid_out = gfs.get(oid)
-        return grid_out.read()
+        data = grid_out.read()
+        # Detect content type from stored metadata, then filename extension
+        meta = getattr(grid_out, "metadata", None) or {}
+        content_type = meta.get("mime_type") or meta.get("content_type")
+        if not content_type:
+            fn = getattr(grid_out, "filename", "") or ""
+            if fn.lower().endswith(".pdf"):
+                content_type = "application/pdf"
+            elif fn.lower().endswith((".jpg", ".jpeg")):
+                content_type = "image/jpeg"
+            else:
+                content_type = "image/png"
+        return (data, content_type)
     except Exception:  # noqa: BLE001
         return None
 
+
+def get_pdf_file_id(contract_id: str) -> str | None:
+    """
+    Find the GridFS ObjectId string for an SLA PDF by contract ID or customer ID.
+    e.g. contract_id="SLA-ACME-001" -> matches filename "SLA_SLA-ACME-001.pdf"
+    """
+    try:
+        db = get_db()
+        # Look in fs.files collection
+        doc = db["fs.files"].find_one({"filename": f"SLA_{contract_id}.pdf"})
+        if not doc:
+            doc = db["fs.files"].find_one({"filename": {"$regex": contract_id, "$options": "i"}})
+        if not doc:
+            doc = db["fs.files"].find_one({"filename": {"$regex": r"\.pdf$", "$options": "i"}})
+        return str(doc["_id"]) if doc else None
+    except Exception:
+        return None

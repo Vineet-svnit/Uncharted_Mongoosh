@@ -16,6 +16,7 @@ Member 2 usage:
         list_incidents,
         search_visual_evidence,
         get_visual_asset,
+        get_pdf_file_id,
     )
 """
 
@@ -30,6 +31,7 @@ from .retrieval import (
     search_messages,
     search_sla,
     search_visual_evidence,
+    get_pdf_file_id,
 )
 
 __all__ = [
@@ -43,5 +45,5 @@ __all__ = [
     "list_incidents",
     "search_visual_evidence",
     "get_visual_asset",
+    "get_pdf_file_id",
 ]
-

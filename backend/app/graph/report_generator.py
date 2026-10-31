@@ -20,6 +20,8 @@ from app.schemas.investigation import (
     SLAAssessment,
     SLAStatus,
     EvidenceItem,
+    VisualEvidenceEntry,
+    CitationCoverage,
 )
 from app.services.evidence_service import EvidenceService
 
@@ -39,6 +41,41 @@ Strict Rules:
 """
 
 
+def _build_visual_evidence_entries(evidence_items: list[EvidenceItem]) -> list[VisualEvidenceEntry]:
+    """Extract VisualEvidenceEntry objects from grafana_screenshot evidence items."""
+    entries = []
+    for ev in evidence_items:
+        if ev.source_type == "grafana_screenshot" and ev.asset_file_id:
+            entries.append(
+                VisualEvidenceEntry(
+                    evidence_id=ev.evidence_id,
+                    title=ev.title,
+                    description=ev.content,
+                    file_id=ev.asset_file_id,
+                    service_id=ev.service_id,
+                    timestamp=ev.timestamp,
+                    explanation=None,
+                )
+            )
+    return entries
+
+
+def _build_citation_coverage(evidence_items: list[EvidenceItem], citations: list[dict]) -> CitationCoverage:
+    """Compute citation coverage statistics."""
+    total = len(citations)
+    valid_ids = {e.evidence_id for e in evidence_items}
+    grounded = sum(1 for c in citations if c.get("evidence_id") in valid_ids)
+    unsupported = total - grounded
+    pct = round((grounded / total * 100) if total > 0 else 0.0, 1)
+    return CitationCoverage(
+        total_factual_claims=total,
+        grounded_claims=grounded,
+        unsupported_claims=unsupported,
+        invalid_citations=0,
+        percentage=pct,
+    )
+
+
 def _synthesize_fallback_report(state: AgentState) -> InvestigationReport:
     """Deterministic structured synthesis when LLM is offline or for deterministic contract tests."""
     plan = state.get("investigation_plan", {})
@@ -55,6 +92,7 @@ def _synthesize_fallback_report(state: AgentState) -> InvestigationReport:
 
     supporting = EvidenceService.classify_supporting(evidence_items)
     contradicting = EvidenceService.classify_contradictions(evidence_items)
+    visual_entries = _build_visual_evidence_entries(evidence_items)
 
     intent = plan.get("intent", "incident_investigation")
     incident_id = plan.get("incident_id") or "INC-2026-10-28-001"
@@ -88,6 +126,7 @@ def _synthesize_fallback_report(state: AgentState) -> InvestigationReport:
                 "Retain security audit logs in centralized SIEM",
             ],
             citations=EvidenceService.validate_citations([], evidence_items),
+            visual_evidence_entries=visual_entries,
         )
 
     # Main Scenario: Checkout API / PR #812 / Redis pool
@@ -128,6 +167,8 @@ def _synthesize_fallback_report(state: AgentState) -> InvestigationReport:
         explanation="Under the Master Services Agreement for Acme Corp, downtime of 23 minutes requires a formal RCA report within 5 business days, with 0% financial penalty credit.",
     )
 
+    validated_cits = EvidenceService.validate_citations([], evidence_items)
+
     report = InvestigationReport(
         investigation_status=InvestigationStatus.COMPLETED,
         incident_id=incident_id,
@@ -161,7 +202,9 @@ def _synthesize_fallback_report(state: AgentState) -> InvestigationReport:
             "Implement connection pool utilization alerting at 80% threshold.",
             "Add circuit breaking and exponential backoff retry policies with jitter to avoid retry storms.",
         ],
-        citations=EvidenceService.validate_citations([], evidence_items),
+        citations=validated_cits,
+        visual_evidence_entries=visual_entries,
+        citation_coverage=_build_citation_coverage(evidence_items, validated_cits),
     )
     return report
 
@@ -204,6 +247,18 @@ def generate_report(state: AgentState) -> dict[str, Any]:
     if report is None:
         report = _synthesize_fallback_report(state)
 
+    # Guarantee all collected evidence items are present in supporting/contradicting evidence
+    existing_ids = {e.evidence_id for e in (report.supporting_evidence or [])} | {
+        e.evidence_id for e in (report.contradicting_evidence or [])
+    }
+    for ev in evidence_items:
+        if ev.evidence_id not in existing_ids:
+            if ev.classification == "contradicting":
+                report.contradicting_evidence.append(ev)
+            else:
+                report.supporting_evidence.append(ev)
+            existing_ids.add(ev.evidence_id)
+
     # Validate citations strictly against real evidence items
     validated_cits = EvidenceService.validate_citations(
         report.citations if isinstance(report.citations, list) else [],
@@ -211,8 +266,15 @@ def generate_report(state: AgentState) -> dict[str, Any]:
     )
     report.citations = validated_cits
 
+    # Always populate visual_evidence_entries from collected evidence
+    if not report.visual_evidence_entries:
+        report.visual_evidence_entries = _build_visual_evidence_entries(evidence_items)
+
+    # Compute citation coverage
+    if not report.citation_coverage:
+        report.citation_coverage = _build_citation_coverage(evidence_items, validated_cits)
+
     return {
-        "investigation_result": report.model_dump(),
+        "investigation_result": report.model_dump(mode="json"),
         "investigation_status": report.investigation_status.value,
     }
-

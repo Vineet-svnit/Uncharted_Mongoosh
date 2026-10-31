@@ -1,16 +1,6 @@
 "use client";
 
 import React, { useState } from "react";
-import {
-  FileText,
-  GitCommit,
-  Activity,
-  MessageSquare,
-  ShieldAlert,
-  Image as ImageIcon,
-  Layers,
-  Filter,
-} from "lucide-react";
 import { EvidenceItem } from "@/types/investigation";
 import { EvidenceCard } from "./EvidenceCard";
 
@@ -30,6 +20,16 @@ type CategoryFilter =
   | "visual"
   | "contradictions";
 
+function isVisual(item: EvidenceItem): boolean {
+  const st = item.source_type?.toLowerCase() || "";
+  return (
+    st.includes("visual") ||
+    st.includes("screenshot") ||
+    st.includes("grafana") ||
+    !!item.asset_file_id
+  );
+}
+
 export const EvidenceList: React.FC<EvidenceListProps> = ({
   supportingEvidence = [],
   contradictingEvidence = [],
@@ -38,11 +38,28 @@ export const EvidenceList: React.FC<EvidenceListProps> = ({
 }) => {
   const [filter, setFilter] = useState<CategoryFilter>("all");
 
-  // Merge unique evidence
+  // Merge unique evidence preserving rich fields (content, citations, status)
   const allMap = new Map<string, EvidenceItem>();
-  [...supportingEvidence, ...contradictingEvidence, ...citations].forEach((e) => {
+  [...supportingEvidence, ...contradictingEvidence, ...(citations || [])].forEach((e) => {
     if (e && e.evidence_id) {
-      allMap.set(e.evidence_id, e);
+      const existing = allMap.get(e.evidence_id);
+      if (!existing) {
+        allMap.set(e.evidence_id, e);
+      } else {
+        // Merge so we never lose rich content or classification
+        allMap.set(e.evidence_id, {
+          ...existing,
+          ...e,
+          content: existing.content || e.content || "",
+          title: existing.title || e.title,
+          source_type: existing.source_type || e.source_type,
+          source_status: existing.source_status || e.source_status || "verified",
+          claim_support: existing.claim_support || e.claim_support || "supported",
+          classification: existing.classification || e.classification || "supporting",
+          citation: existing.citation || e.citation,
+          asset_file_id: existing.asset_file_id || e.asset_file_id,
+        });
+      }
     }
   });
   const allItems = Array.from(allMap.values());
@@ -66,7 +83,7 @@ export const EvidenceList: React.FC<EvidenceListProps> = ({
       return st.includes("sla") || st.includes("contract");
     }
     if (filter === "visual") {
-      return st.includes("visual") || st.includes("screenshot") || !!item.asset_file_id;
+      return isVisual(item);
     }
     return true;
   };
@@ -107,7 +124,7 @@ export const EvidenceList: React.FC<EvidenceListProps> = ({
     {
       id: "visual",
       label: "Visual / Dashboards",
-      count: allItems.filter((i) => i.source_type?.includes("visual") || !!i.asset_file_id).length,
+      count: allItems.filter(isVisual).length,
     },
   ];
 
@@ -153,4 +170,3 @@ export const EvidenceList: React.FC<EvidenceListProps> = ({
     </div>
   );
 };
-

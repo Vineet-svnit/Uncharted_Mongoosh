@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -21,6 +22,12 @@ export const Modal: React.FC<ModalProps> = ({
   children,
   maxWidth = "lg",
 }) => {
+  const [mounted, setMounted] = useState<boolean>(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -35,7 +42,7 @@ export const Modal: React.FC<ModalProps> = ({
     };
   }, [isOpen, onClose]);
 
-  if (!isOpen) return null;
+  if (!isOpen || !mounted) return null;
 
   const maxWidths = {
     sm: "max-w-sm",
@@ -46,8 +53,8 @@ export const Modal: React.FC<ModalProps> = ({
     "4xl": "max-w-4xl",
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+  const modalContent = (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4">
       {/* Backdrop */}
       <div
         className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm transition-opacity animate-in fade-in duration-200"
@@ -64,7 +71,7 @@ export const Modal: React.FC<ModalProps> = ({
         {/* Header */}
         {(title || description) && (
           <div className="flex items-start justify-between border-b border-dark-border px-6 py-4">
-            <div>
+            <div className="pr-4 min-w-0">
               {title && (
                 <h3 className="text-lg font-semibold text-slate-text">
                   {title}
@@ -76,7 +83,8 @@ export const Modal: React.FC<ModalProps> = ({
             </div>
             <button
               onClick={onClose}
-              className="rounded-lg p-1 text-slate-muted hover:bg-dark-surfaceSecondary hover:text-slate-text transition-colors"
+              className="rounded-lg p-1 text-slate-muted hover:bg-dark-surfaceSecondary hover:text-slate-text transition-colors shrink-0"
+              aria-label="Close modal"
             >
               <X className="h-5 w-5" />
             </button>
@@ -88,5 +96,6 @@ export const Modal: React.FC<ModalProps> = ({
       </div>
     </div>
   );
-};
 
+  return createPortal(modalContent, document.body);
+};

@@ -115,7 +115,6 @@ export function useInvestigationStream(): UseInvestigationStreamReturn {
           };
 
           setToolExecutions((prev) => {
-            // Check if tool is already running
             const existingIdx = prev.findIndex(
               (t) => t.tool === data.tool && t.status === "running"
             );
@@ -134,14 +133,21 @@ export function useInvestigationStream(): UseInvestigationStreamReturn {
         onToolCompleted: (data: ToolCompletedPayload) => {
           const toolMeta = getToolInfo(data.tool);
           setToolExecutions((prev) => {
-            // Find matching running tool, or fallback to the last tool or composite
             let matched = false;
             const updated = prev.map((t) => {
-              if (
-                !matched &&
-                (t.tool === data.tool || data.tool === "investigation_tools") &&
-                t.status === "running"
-              ) {
+              // If generic investigation_tools batch completion, complete all running tools
+              if (data.tool === "investigation_tools" && t.status === "running") {
+                matched = true;
+                return {
+                  ...t,
+                  status: "completed" as const,
+                  completed_at: new Date().toISOString(),
+                  evidence_count: t.evidence_count || data.evidence_count,
+                  summary: t.summary || data.summary,
+                };
+              }
+              // Specific tool completion
+              if (!matched && t.tool === data.tool && t.status === "running") {
                 matched = true;
                 return {
                   ...t,
@@ -154,8 +160,8 @@ export function useInvestigationStream(): UseInvestigationStreamReturn {
               return t;
             });
 
-            if (!matched) {
-              // Add as completed directly
+            if (!matched && data.tool !== "investigation_tools") {
+              // Add as completed directly if not found
               updated.push({
                 id: `${data.tool}-${Date.now()}`,
                 tool: data.tool,
@@ -175,6 +181,18 @@ export function useInvestigationStream(): UseInvestigationStreamReturn {
           onAssistantResult?.(data);
         },
         onDone: (data: DonePayload) => {
+          // Ensure all running tools are safely marked completed so none are discarded
+          setToolExecutions((prev) =>
+            prev.map((t) =>
+              t.status === "running"
+                ? {
+                    ...t,
+                    status: "completed" as const,
+                    completed_at: new Date().toISOString(),
+                  }
+                : t
+            )
+          );
           setCurrentStage("completed");
           setStageMessage("Investigation complete");
           setIsStreaming(false);
@@ -216,4 +234,3 @@ export function useInvestigationStream(): UseInvestigationStreamReturn {
     resetStream,
   };
 }
-

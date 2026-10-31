@@ -92,18 +92,27 @@ def agent_node(state: AgentState) -> dict[str, Any]:
         customer_id = plan.get("customer_id") or "acme-corp"
         intent = plan.get("intent", "incident_investigation")
 
-        if intent == "historical_rag":
+        if intent in ("historical_rag", "follow_up_question"):
+            # Historical/follow-up: search runbooks, postmortems, prior incidents, and messages
+            query_hint = plan.get("query", "") or "Redis connection pool exhaustion auth-service"
             tool_calls.append(
                 {
                     "name": "search_engineering_knowledge",
-                    "args": {"query": "Redis pool size connection exhaustion runbook postmortem"},
+                    "args": {"query": f"Redis pool size connection exhaustion runbook postmortem {service_id}"},
                     "id": "call_kb_hist_001",
                 }
             )
             tool_calls.append(
                 {
+                    "name": "search_engineering_knowledge",
+                    "args": {"query": "similar incident connection pool saturation previous outage"},
+                    "id": "call_kb_hist_001b",
+                }
+            )
+            tool_calls.append(
+                {
                     "name": "search_incident_messages",
-                    "args": {"query": "Redis connection pool failure", "incident_id": incident_id},
+                    "args": {"query": "Redis connection pool failure exhaustion saturation", "incident_id": incident_id},
                     "id": "call_slack_hist_002",
                 }
             )
@@ -112,6 +121,24 @@ def agent_node(state: AgentState) -> dict[str, Any]:
                     "name": "list_known_incidents",
                     "args": {},
                     "id": "call_inc_hist_003",
+                }
+            )
+            tool_calls.append(
+                {
+                    "name": "query_service_telemetry",
+                    "args": {
+                        "service_id": service_id,
+                        "start": "2026-10-28T14:00:00Z",
+                        "end": "2026-10-28T14:25:00Z",
+                    },
+                    "id": "call_tel_hist_004",
+                }
+            )
+            tool_calls.append(
+                {
+                    "name": "find_recent_deployments",
+                    "args": {"service_id": service_id},
+                    "id": "call_dep_hist_005",
                 }
             )
         else:
@@ -236,40 +263,141 @@ def execute_tools(state: AgentState) -> dict[str, Any]:
                             topo = parsed["topology"]
                             svc = topo.get("service_id", "unknown")
                             deps = topo.get("dependencies", [])
+                            dep_names = [d.get("service_id", "") for d in deps if isinstance(d, dict)]
+                            content = (
+                                f"Service: {svc}\n"
+                                f"Environment: production\n"
+                                f"Upstream / Downstream Microservice Dependencies: {', '.join(dep_names) if dep_names else 'None'}\n"
+                                f"Critical Failure Chain: {svc} relies on {', '.join(dep_names[:2]) if dep_names else 'none'} for request handling."
+                            )
                             evidence_items.append({
                                 "evidence_id": f"EVD-TOPO-{svc}",
                                 "source_type": "service_topology",
                                 "source_id": svc,
                                 "title": f"Dependency Topology for {svc}",
-                                "content": f"Service {svc} dependencies: {', '.join([d.get('service_id', '') for d in deps]) if deps else 'None'}",
+                                "content": content,
                                 "service_id": svc,
+                                "citation": {
+                                    "file_name": f"topology_{svc}.json",
+                                    "line_start": 1,
+                                    "line_end": None,
+                                    "page": None,
+                                },
+                                "retrieval_method": "graph_lookup",
+                                "relevance_score": 0.95,
                                 "classification": "supporting",
-                            })
-                            result_count += 1
-
-                        if "assessment" in parsed and isinstance(parsed["assessment"], dict):
-                            asmt = parsed["assessment"]
-                            cust = parsed.get("customer_id", "sla")
-                            evidence_items.append({
-                                "evidence_id": f"EVD-SLA-{cust}",
-                                "source_type": "contract",
-                                "source_id": cust,
-                                "title": f"SLA Assessment for {cust}",
-                                "content": asmt.get("explanation", f"Downtime: {asmt.get('downtime_minutes')}m, Credit: {asmt.get('credit_percent')}%"),
-                                "classification": "supporting",
+                                "source_status": "verified",
+                                "claim_support": "supported",
                             })
                             result_count += 1
 
                         if "incident" in parsed and isinstance(parsed["incident"], dict):
                             inc = parsed["incident"]
+                            inc_id = inc.get("incident_id", "INC-2026-10-28-001")
+                            title = inc.get("title") or f"Incident Record {inc_id}"
+                            rc_summary = inc.get("root_cause_summary") or inc.get("summary") or ""
+                            start_ts = inc.get("start_time")
+                            end_ts = inc.get("end_time")
+                            downtime = inc.get("downtime_minutes")
+                            affected = inc.get("affected_services", [])
+                            affected_str = ", ".join(affected) if affected else "checkout-api, auth-service"
+                            severity = inc.get("severity", "P1")
+                            cust = inc.get("customer_id", "acme-corp")
+
+                            content_lines = [
+                                f"Incident Record: {inc_id}",
+                                f"Title: {title}",
+                                f"Severity: {severity} | Customer: {cust}",
+                                f"Impact Window: {start_ts} to {end_ts} ({downtime} minutes downtime)",
+                                f"Affected Services: {affected_str}",
+                                "",
+                                "Root Cause Summary:",
+                                rc_summary,
+                            ]
+
                             evidence_items.append({
-                                "evidence_id": f"EVD-INC-{inc.get('incident_id', '001')}",
+                                "evidence_id": f"EVD-{inc_id}",
                                 "source_type": "incident_record",
-                                "source_id": inc.get("incident_id", "incident"),
-                                "title": f"Incident Record {inc.get('incident_id')}: {inc.get('title', '')}",
-                                "content": inc.get("summary", ""),
-                                "service_id": inc.get("service_id"),
+                                "source_id": inc_id,
+                                "title": f"Incident Record {inc_id}: {title}",
+                                "content": "\n".join(content_lines),
+                                "service_id": affected[0] if affected else "checkout-api",
+                                "timestamp": start_ts,
+                                "citation": {
+                                    "file_name": f"{inc_id}.json",
+                                    "line_start": 1,
+                                    "line_end": 28,
+                                    "page": None,
+                                },
+                                "retrieval_method": "direct_query",
+                                "relevance_score": 1.0,
                                 "classification": "supporting",
+                                "source_status": "verified",
+                                "claim_support": "supported",
+                            })
+                            result_count += 1
+
+                        pdf_file_id = parsed.get("pdf_file_id")
+                        contract_file = parsed.get("file_name", "SLA_SLA-ACME-001.pdf")
+                        clauses = parsed.get("clauses", [])
+
+                        if "assessment" in parsed and isinstance(parsed["assessment"], dict):
+                            asmt = parsed["assessment"]
+                            cust = parsed.get("customer_id", "acme-corp")
+                            evidence_items.append({
+                                "evidence_id": f"EVD-SLA-{cust}",
+                                "source_type": "pdf_contract",
+                                "source_id": f"SLA-{cust.upper()}",
+                                "title": f"SLA Assessment for {cust}: {asmt.get('status', 'assessed').upper()}",
+                                "content": (
+                                    f"Customer: {cust}\n"
+                                    f"Downtime Duration: {asmt.get('downtime_minutes')} minutes\n"
+                                    f"Financial Penalty Credit: {asmt.get('credit_percent')}%\n"
+                                    f"Formal RCA Required: {'YES (Mandatory)' if asmt.get('rca_required') else 'NO'}\n\n"
+                                    f"Contractual Ruling & Obligations:\n{asmt.get('explanation')}"
+                                ),
+                                "service_id": "global",
+                                "citation": {
+                                    "file_name": contract_file,
+                                    "page": 4,
+                                    "clause": "4.2",
+                                    "pdf_file_id": pdf_file_id,
+                                },
+                                "retrieval_method": "deterministic_rules",
+                                "relevance_score": 1.0,
+                                "classification": "supporting",
+                                "source_status": "verified",
+                                "claim_support": "supported",
+                            })
+                            result_count += 1
+
+                        for c in clauses:
+                            c_num = c.get("clause_number", "1")
+                            evidence_items.append({
+                                "evidence_id": f"EVD-SLA-{c_num.replace('.', '-')}",
+                                "source_type": "pdf_contract",
+                                "source_id": c.get("clause_id", f"clause-{c_num}"),
+                                "title": f"SLA Clause {c_num}: {c.get('title', 'SLA Terms')}",
+                                "content": (
+                                    f"Clause {c_num}: {c.get('title')}\n"
+                                    f"Customer: {c.get('customer_name', cust)}\n"
+                                    f"Contract: {c.get('contract_id')} (Page {c.get('page')})\n\n"
+                                    f"Terms:\n{c.get('content')}\n\n"
+                                    f"Thresholds: {c.get('downtime_min_minutes')}-{c.get('downtime_max_minutes')} min downtime | "
+                                    f"Credit: {c.get('financial_credit_pct')}% | RCA: {c.get('rca_required')}"
+                                ),
+                                "service_id": "global",
+                                "citation": {
+                                    "file_name": contract_file,
+                                    "page": c.get("page"),
+                                    "clause": c_num,
+                                    "pdf_file_id": pdf_file_id,
+                                },
+                                "retrieval_method": "direct_query",
+                                "relevance_score": 0.95,
+                                "classification": "supporting",
+                                "source_status": "verified",
+                                "claim_support": "supported",
                             })
                             result_count += 1
 

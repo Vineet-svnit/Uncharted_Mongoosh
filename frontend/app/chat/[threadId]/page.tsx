@@ -22,6 +22,7 @@ export default function ChatThreadPage() {
     isInspectorOpen,
     setIsInspectorOpen,
     sendMessage,
+    openInspectorForMessage,
     handleCitationClick,
     refreshMessages,
   } = useChat(threadId);
@@ -70,10 +71,9 @@ export default function ChatThreadPage() {
         onSendMessage={sendMessage}
         onCancelStream={stream.cancelInvestigation}
         onCitationClick={handleCitationClick}
-        onOpenInspector={() => setIsInspectorOpen(true)}
+        onOpenInspectorForResult={openInspectorForMessage}
         onRetry={refreshMessages}
       />
     </AppLayout>
   );
 }
-
