@@ -4,7 +4,7 @@
 
 ---
 
-## Table of Contents
+## Table of Contents 
 
 1. [Problem Statement](#1-problem-statement)
 2. [Proposed Solution](#2-proposed-solution)
