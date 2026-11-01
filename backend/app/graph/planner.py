@@ -1,6 +1,7 @@
 """Investigation Planner Node for AegisRCA."""
 
 from typing import Any
+import re
 import json
 import logging
 from pydantic import BaseModel, Field
@@ -16,18 +17,27 @@ logger = logging.getLogger(__name__)
 class InvestigationPlan(BaseModel):
     intent: str = Field(
         default="incident_investigation",
-        description="Intent: 'incident_investigation', 'follow_up_question', 'historical_rag', 'clarification_needed'",
+        description=(
+            "Inquiry intent: "
+            "'incident_investigation' (investigating an incident or service issue), "
+            "'historical_rag' (inquiring about past postmortems, runbooks, or similar incidents), "
+            "'follow_up_question' (follow-up in an ongoing thread), "
+            "'conversation_memory' (inquiries about ongoing chat history, user identity e.g. 'what is my name', or past turns), "
+            "'general_sre_inquiry' (greetings, architectural concepts, general SRE questions, or code requests not requiring database lookup), "
+            "'out_of_domain' (questions completely unrelated to SRE, cloud infrastructure, or the ongoing conversation), "
+            "'clarification_needed' (ambiguous query referring to unspecified incidents)"
+        ),
     )
-    service_id: str | None = Field(default=None, description="Affected service ID if mentioned or inferred")
+    service_id: str | None = Field(default=None, description="Affected service ID if mentioned or inferred from query/context")
     incident_id: str | None = Field(default=None, description="Explicit incident ID if provided, e.g. 'INC-2026-10-28-001'")
-    customer_id: str | None = Field(default=None, description="Affected customer ID if provided, e.g. 'acme-corp'")
+    customer_id: str | None = Field(default=None, description="Affected customer ID if provided")
     time_range: dict[str, str] | None = Field(
         default=None,
         description="Time window dictionary with 'start' and 'end' ISO-8601 strings",
     )
     required_sources: list[str] = Field(
         default_factory=list,
-        description="List of sources: ['topology', 'deployments', 'telemetry', 'communications', 'sla', 'runbooks']",
+        description="List of sources: ['topology', 'deployments', 'telemetry', 'communications', 'sla', 'runbooks', 'incidents', 'visual']",
     )
     needs_clarification: bool = Field(
         default=False,
@@ -39,117 +49,176 @@ class InvestigationPlan(BaseModel):
     )
 
 
-PLANNER_PROMPT = """You are the Investigation Planner for AegisRCA.
+PLANNER_PROMPT = """You are the Investigation Planner for AegisRCA, an autonomous SRE & Root Cause Analysis assistant.
 Analyze the user's inquiry and the conversation history to formulate an actionable investigation plan.
 
-## KNOWN SYSTEM CONTEXT
-Active Incident: INC-2026-10-28-001 - Checkout API (checkout-api) had 0% availability from 14:00-14:25 UTC on 2026-10-28. Customer: acme-corp.
-Root cause suspected: Redis connection pool exhaustion after PR #812 deployment to auth-service at 13:58 UTC.
+## INTENT TAXONOMY:
+- conversation_memory: Inquiries about the conversation state, previous messages ("what did I ask earlier?", "what was the first code I asked?"), user identity ("what is my name?", "who am I?"), or meta-dialogue. These are 100% in-domain conversation questions. required_sources=[]
+- general_sre_inquiry: Greetings ("hi", "who are you"), general conceptual SRE / architectural questions, or requests for production SRE / infrastructure automation scripts (e.g. health checks, connection pool monitors, Prometheus exporters). NEVER use for academic DSA or LeetCode questions. required_sources=[]
+- incident_investigation: Investigating a specific production incident, service failure, outage, or performance degradation.
+- historical_rag: Inquiries asking about previous similar incidents, historical postmortems, or runbooks ("have we seen this before", "similar problem", "previous outage").
+- follow_up_question: Continuing or drilling into a previously investigated incident from conversation history.
+- out_of_domain: The query is completely external and unrelated to SRE, cloud infrastructure, OR the conversation state. This explicitly includes:
+  * General trivia, cooking recipes, movies, sports, politics, weather.
+  * Academic Data Structures & Algorithms (DSA), competitive programming, or LeetCode questions (e.g. 2-Sum, 3-Sum, binary trees, sorting algorithms, dynamic programming puzzles).
+  required_sources=[]
+- clarification_needed: The user asks an operational question but it is completely ambiguous (e.g. "what broke?") and multiple incidents could match.
 
-Known Services (exact IDs): checkout-api, auth-service, redis-cluster-east, payment-service, notification-service, api-gateway, billing-service, recommendation-engine
-Known Customers: acme-corp
+## EXTRACTION GUIDELINES:
+1. Extract service_id, incident_id, customer_id, and time_range strictly from the user's message or the conversation history.
+2. If not mentioned or established in context, leave them as null. NEVER hallucinate or assume arbitrary IDs.
+3. For follow_up_question: Always preserve service_id, incident_id, and customer_id established in the conversation context.
+4. For conversation_memory, general_sre_inquiry, and out_of_domain: required_sources is empty [].
+5. Set required_sources based on what is genuinely required:
+   - topology: Service dependencies and call graphs
+   - deployments: Recent code releases, PRs, and config changes
+   - telemetry: Metric time-series (error rates, latency, saturation)
+   - communications: Slack/chat discussions
+   - sla: Customer contract terms and credit rules
+   - runbooks: Engineering knowledge and historical postmortems
+   - incidents: Listing or finding known incident records
 
-## MAPPING RULES
-- Questions about "database slowdown", "Redis", "connection pool", "504", "timeout", "latency", "slowdown" -> service_id="checkout-api", incident_id="INC-2026-10-28-001"
-- Questions about "auth" or "authentication" failures -> service_id="auth-service"
-- Questions about any deployment without specifying a service -> service_id="checkout-api", incident_id="INC-2026-10-28-001"
-- Historical questions ("have we seen this before", "similar problem", "experienced before", "happened before", "previous") -> intent="historical_rag", required_sources=["runbooks", "postmortems", "knowledge"]
-- Follow-up questions in an ongoing conversation -> set intent="follow_up_question", PRESERVE the service_id and incident_id from the conversation context
-- ALWAYS populate service_id from the above mapping for any incident/failure/slowdown/error question. Never leave it null for operational questions.
-- Default required_sources for incident_investigation: ["topology", "deployments", "telemetry", "communications"]
-- For historical_rag and follow_up_question: ALSO include ["runbooks", "postmortems", "knowledge"] in required_sources
-
-## GENERAL RULES
-1. Do not invent IDs or customer names not listed above. Unknown optional fields must be null.
-2. Set needs_clarification=True ONLY if the query is completely ambiguous and cannot be mapped to any known service or incident.
-3. If the user is asking a follow-up question on an ongoing investigation, set intent='follow_up_question' and ALWAYS preserve previous service/incident context from the conversation history.
-4. Output must strictly follow the JSON schema.
+Output must strictly conform to the InvestigationPlan JSON schema.
 """
 
 
 def _heuristic_planner(last_query: str, prior_incident_id: str | None = None, prior_service_id: str | None = None) -> InvestigationPlan:
     """Deterministic fallback planner when LLM is unavailable or for deterministic tests."""
-    q = last_query.lower()
+    q = last_query.lower().strip()
 
-    # Vague question test
-    if "deployment fail yesterday" in q or "what failed yesterday" in q or "deployment fail" in q:
+    # Conversation memory & user identity check
+    memory_keywords = [
+        "what is my name", "what's my name", "who am i", "my name",
+        "what did i ask", "what was the first", "what was my first",
+        "what did i say", "previous question", "earlier question",
+        "first code", "what was the code", "what code did i",
+        "what was its response", "what was the response",
+        "summarize our conversation", "what have we talked about"
+    ]
+    if any(kw in q for kw in memory_keywords):
+        return InvestigationPlan(
+            intent="conversation_memory",
+            required_sources=[],
+            needs_clarification=False,
+        )
+
+    # Academic DSA / LeetCode / Algorithmic Coding Check (STRICT HARDRALILING: OUT OF DOMAIN)
+    dsa_keywords = [
+        "3 sum", "3sum", "two sum", "2sum", "leetcode", "dsa", "data structure",
+        "binary search tree", "bst", "bubble sort", "quick sort", "quicksort", "merge sort",
+        "mergesort", "insertion sort", "linked list", "binary tree", "trie", "knapsack",
+        "dynamic programming", "tower of hanoi", "fibonacci", "palindrome", "prime number",
+        "invert a binary tree", "matrix multiplication", "depth first search", "breadth first search",
+        "dijkstra", "topological sort", "graph coloring", "competitive programming"
+    ]
+    if any(kw in q for kw in dsa_keywords):
+        return InvestigationPlan(
+            intent="out_of_domain",
+            required_sources=[],
+            needs_clarification=False,
+        )
+
+    # General SRE code/script requests
+    if "python code" in q or "provide code" in q or "write a script" in q or "sample code" in q:
+        return InvestigationPlan(
+            intent="general_sre_inquiry",
+            required_sources=[],
+            needs_clarification=False,
+        )
+
+    # Out of domain check (completely external topics)
+    out_of_domain_keywords = [
+        "recipe", "cook", "capital of", "weather in", "joke", "movie", "song", "lyrics",
+        "football", "cricket", "basketball", "who won", "president of", "capital city",
+        "tell me a story", "write a poem", "horoscope"
+    ]
+    if any(kw in q for kw in out_of_domain_keywords):
+        return InvestigationPlan(
+            intent="out_of_domain",
+            required_sources=[],
+            needs_clarification=False,
+        )
+
+    # Greeting / General conversation check
+    greeting_keywords = ["hello", "hi", "hey", "who are you", "what can you do", "help me"]
+    if q in greeting_keywords or any(q.startswith(g) and len(q) < 25 for g in greeting_keywords):
+        return InvestigationPlan(
+            intent="general_sre_inquiry",
+            required_sources=[],
+            needs_clarification=False,
+        )
+
+    # Vague question check
+    if "deployment fail yesterday" in q or "what failed yesterday" in q or (q.startswith("what failed") and len(q) < 30):
         return InvestigationPlan(
             intent="clarification_needed",
             needs_clarification=True,
-            clarification_question="Multiple incidents were recorded yesterday. Could you clarify whether you are referring to Checkout API (INC-2026-10-28-001) or Billing Webhooks (INC-2026-10-27-003)?",
+            clarification_question="Multiple incidents may have occurred. Could you specify which service, incident ID, or time window you would like to investigate?",
             required_sources=["incidents"],
         )
 
-    # Historical RAG / follow-up — include context from prior investigation
+    # Historical RAG / follow-up
     historical_keywords = [
         "similar redis problem", "similar problem", "have we encountered", "have we experienced",
-        "before", "previous", "historically", "happened before", "seen before", "prior incident"
+        "before", "previous", "historically", "happened before", "seen before", "prior incident",
+        "postmortem", "runbook"
     ]
     if any(kw in q for kw in historical_keywords):
         return InvestigationPlan(
             intent="historical_rag",
-            service_id=prior_service_id or "auth-service",
+            service_id=prior_service_id,
             incident_id=prior_incident_id,
             required_sources=["runbooks", "postmortems", "knowledge", "communications"],
             needs_clarification=False,
         )
 
-    # EU cluster PII test
-    if "eu cluster" in q or "pii" in q or "unencrypted" in q:
-        return InvestigationPlan(
-            intent="incident_investigation",
-            service_id="auth-service",
-            incident_id="INC-2026-10-15-002",
-            customer_id="globex-corp",
-            required_sources=["telemetry", "audit_logs"],
-            needs_clarification=False,
-        )
+    # Dynamic entity extraction
+    # 1. Incident ID pattern (e.g. INC-2026-10-28-001, INC-1234)
+    inc_match = re.search(r'\b(INC-[0-9A-Za-z-]+)\b', last_query, re.IGNORECASE)
+    incident_id = inc_match.group(1).upper() if inc_match else prior_incident_id
 
-    # Main Scenario 1 / Checkout API
-    service_id = "checkout-api" if "checkout" in q else None
-    incident_id = "INC-2026-10-28-001" if ("october 28" in q or "oct 28" in q or "checkout" in q) else None
-    customer_id = "acme-corp" if "acme" in q else None
-    time_range = None
-    if "14:00" in q or "october 28" in q or "oct 28" in q:
-        time_range = {
-            "start": "2026-10-28T14:00:00Z",
-            "end": "2026-10-28T14:25:00Z",
-        }
-
-    # Keyword-based service inference for general queries
-    if service_id is None:
-        known_services = [
-            "checkout-api", "auth-service", "redis-cluster-east", "payment-service",
-            "notification-service", "api-gateway", "billing-service", "recommendation-engine"
-        ]
-        for svc in known_services:
-            if svc in q or svc.replace("-", " ") in q:
-                service_id = svc
-                break
-
-    # General incident-related keywords -> default to primary incident
-    incident_keywords = [
-        "database", "slowdown", "slow", "redis", "connection pool", "504", "timeout",
-        "latency", "error", "failure", "fail", "outage", "incident", "degradation",
-        "deployment", "pr #812", "pr812", "caused by", "root cause", "why did", "what caused",
-    ]
-    if service_id is None and any(kw in q for kw in incident_keywords):
+    # 2. Service ID extraction
+    # Look for kebab-case tokens or tokens containing service/api/cluster/gateway
+    service_id = None
+    svc_tokens = re.findall(r'\b([a-z0-9]+(?:-[a-z0-9]+)*(?:-service|-api|-engine|-gateway|-cluster|-db))\b', q)
+    if svc_tokens:
+        service_id = svc_tokens[0]
+    elif "checkout" in q:
         service_id = "checkout-api"
-        if incident_id is None:
-            incident_id = "INC-2026-10-28-001"
-
-    # Fall back to prior context for follow-up questions with no explicit service/incident
-    if service_id is None and prior_service_id:
+    elif "auth" in q:
+        service_id = "auth-service"
+    elif "redis" in q:
+        service_id = "redis-cluster-east"
+    elif "payment" in q:
+        service_id = "payment-service"
+    elif "notification" in q:
+        service_id = "notification-service"
+    elif "billing" in q:
+        service_id = "billing-service"
+    else:
         service_id = prior_service_id
-    if incident_id is None and prior_incident_id:
-        incident_id = prior_incident_id
+
+    # 3. Customer ID extraction
+    customer_id = None
+    if "acme" in q:
+        customer_id = "acme-corp"
+    elif "globex" in q:
+        customer_id = "globex-corp"
+
+    # 4. Dynamic Time range extraction (extracts ISO timestamps or date tokens dynamically)
+    time_range = None
+    iso_matches = re.findall(r'\b\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:\d{2})?)?\b', last_query)
+    if len(iso_matches) >= 2:
+        time_range = {"start": iso_matches[0], "end": iso_matches[1]}
+    elif len(iso_matches) == 1:
+        time_range = {"start": iso_matches[0], "end": iso_matches[0]}
 
     sources = ["topology", "deployments", "telemetry", "communications"]
-    if customer_id or "sla" in q or "compensation" in q or "penalty" in q:
+    if customer_id or "sla" in q or "compensation" in q or "penalty" in q or "credit" in q:
         sources.append("sla")
 
     return InvestigationPlan(
-        intent="incident_investigation",
+        intent="incident_investigation" if (service_id or incident_id) else "follow_up_question" if prior_service_id else "incident_investigation",
         service_id=service_id,
         incident_id=incident_id,
         customer_id=customer_id,
@@ -160,15 +229,27 @@ def _heuristic_planner(last_query: str, prior_incident_id: str | None = None, pr
 
 
 def _extract_prior_context(messages: list) -> tuple[str | None, str | None]:
-    """Extract previously established incident_id and service_id from message history."""
+    """Extract previously established incident_id and service_id from message history dynamically."""
+    inc_pattern = re.compile(r'\b(INC-[0-9A-Za-z-]+)\b', re.IGNORECASE)
+    svc_pattern = re.compile(r'\b([a-z0-9]+(?:-[a-z0-9]+)*(?:-service|-api|-engine|-gateway|-cluster|-db))\b', re.IGNORECASE)
+
+    found_inc = None
+    found_svc = None
+
     for m in reversed(messages):
         content = m.content if isinstance(m.content, str) else str(m.content)
-        # Look for investigation plan stored in system/AI messages
-        if "INC-2026-10-28-001" in content:
-            return "INC-2026-10-28-001", "checkout-api"
-        if "auth-service" in content and "redis" in content.lower():
-            return "INC-2026-10-28-001", "auth-service"
-    return None, None
+        if not found_inc:
+            inc_match = inc_pattern.search(content)
+            if inc_match:
+                found_inc = inc_match.group(1).upper()
+        if not found_svc:
+            svc_match = svc_pattern.search(content)
+            if svc_match:
+                found_svc = svc_match.group(1).lower()
+        if found_inc and found_svc:
+            break
+
+    return found_inc, found_svc
 
 
 def plan_investigation(state: AgentState) -> dict[str, Any]:
@@ -185,14 +266,46 @@ def plan_investigation(state: AgentState) -> dict[str, Any]:
 
     plan: InvestigationPlan | None = None
 
+    # ── PRE-LLM DETERMINISTIC OVERRIDE ──────────────────────────────────────
+    # For conversation-memory and out-of-domain intents, skip the LLM planner
+    # entirely to avoid contamination from prior incident context in the thread.
+    q_lower = last_user_msg.lower().strip()
+    _memory_kws = [
+        "what is my name", "what's my name", "who am i", "my name",
+        "what did i ask", "what was the first", "what was my first",
+        "what did i say", "previous question", "earlier question",
+        "first code", "what was the code", "what code did i",
+        "what was its response", "what was the response",
+        "summarize our conversation", "what have we talked about",
+    ]
+    _dsa_kws = [
+        "3 sum", "3sum", "two sum", "2sum", "leetcode", "dsa", "data structure",
+        "binary search tree", "bst", "bubble sort", "quick sort", "quicksort", "merge sort",
+        "mergesort", "insertion sort", "linked list", "binary tree", "trie", "knapsack",
+        "dynamic programming", "tower of hanoi", "fibonacci", "palindrome", "prime number",
+        "invert a binary tree", "matrix multiplication", "depth first search", "breadth first search",
+        "dijkstra", "topological sort", "graph coloring", "competitive programming"
+    ]
+    _ood_kws = [
+        "recipe", "cook", "capital of", "weather in", " joke", "movie", "song", "lyrics",
+        "football", "cricket", "basketball", "who won", "president of", "capital city",
+        "tell me a story", "write a poem", "horoscope", "politics", "minister"
+    ]
+    if any(kw in q_lower for kw in _dsa_kws):
+        plan = InvestigationPlan(intent="out_of_domain", required_sources=[], needs_clarification=False)
+    elif any(kw in q_lower for kw in _memory_kws):
+        plan = InvestigationPlan(intent="conversation_memory", required_sources=[], needs_clarification=False)
+    elif any(kw in q_lower for kw in _ood_kws):
+        plan = InvestigationPlan(intent="out_of_domain", required_sources=[], needs_clarification=False)
+    # ── END PRE-LLM OVERRIDE ─────────────────────────────────────────────────
+
     llm = get_llm(temperature=0.0)
-    if llm:
+    if llm and plan is None:
         try:
             structured_llm = llm.with_structured_output(InvestigationPlan, method="function_calling")
 
-            # Build conversation context for planner — include last 3 exchanges
+            # Build conversation context for planner
             planner_msgs = [SystemMessage(content=PLANNER_PROMPT)]
-            # Add recent conversation history (last 6 messages for context)
             recent = messages[-6:] if len(messages) > 6 else messages
             for m in recent:
                 role = getattr(m, "type", None) or getattr(m, "role", None)
@@ -200,14 +313,12 @@ def plan_investigation(state: AgentState) -> dict[str, Any]:
                 if role in ("human", "user") and content != last_user_msg:
                     planner_msgs.append(HumanMessage(content=f"[Previous query]: {content}"))
                 elif role in ("ai", "assistant"):
-                    # Summarize AI response for context
                     summary = content[:300] + "..." if len(content) > 300 else content
                     planner_msgs.append(AIMessage(content=f"[Previous response summary]: {summary}"))
 
-            # Add prior context hint if available
             context_hint = ""
-            if prior_incident_id:
-                context_hint = f"\n[Context: Previous investigation was about incident {prior_incident_id}, service {prior_service_id}. If this is a follow-up, preserve that context.]"
+            if prior_incident_id or prior_service_id:
+                context_hint = f"\n[Context: Previous investigation touched incident={prior_incident_id}, service={prior_service_id}. If this is a follow-up, preserve that context.]"
 
             planner_msgs.append(HumanMessage(content=f"User Query: {last_user_msg}{context_hint}"))
 

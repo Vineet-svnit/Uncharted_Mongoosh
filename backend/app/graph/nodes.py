@@ -26,7 +26,7 @@ def _get_llm_with_tools():
 
 
 def agent_node(state: AgentState) -> dict[str, Any]:
-    """Main LLM reasoning node with native tool calling and targeted fallback."""
+    """Main LLM reasoning node with native tool calling and dynamic fallback."""
     messages = list(state.get("messages", []))
     plan = state.get("investigation_plan", {})
     evidence_items = state.get("evidence_items", [])
@@ -44,22 +44,11 @@ def agent_node(state: AgentState) -> dict[str, Any]:
         }
 
     # Context enrichment for reasoning
-    mandatory_directive = ""
-    if tool_iter == 0:
-        mandatory_directive = (
-            "CRITICAL OPERATIONAL REQUIREMENT (Turn 1): You have NOT executed any investigation tools yet. "
-            "You MUST call 2 to 5 relevant investigation tools right now to gather facts (e.g. search_engineering_knowledge, "
-            "find_recent_deployments, query_service_telemetry, trace_service_dependencies, search_incident_messages). "
-            "DO NOT generate a plain text response or conclusion without calling tools first."
-        )
-
     prompt_context = (
         f"{AEGIS_RCA_SYSTEM_PROMPT}\n\n"
         f"CURRENT INVESTIGATION PLAN: {json.dumps(plan)}\n"
         f"EVIDENCE COLLECTED SO FAR: {len(evidence_items)} items.\n"
     )
-    if mandatory_directive:
-        prompt_context += f"\n{mandatory_directive}\n"
     if feedback:
         prompt_context += f"VERIFICATION FEEDBACK (Address these gaps): {feedback}\n"
 
@@ -74,126 +63,181 @@ def agent_node(state: AgentState) -> dict[str, Any]:
     if llm_with_tools:
         try:
             response = llm_with_tools.invoke(history_to_send)
-            has_tool_calls = bool(getattr(response, "tool_calls", None))
-            if has_tool_calls or tool_iter > 0:
-                return {"messages": [response]}
-            logger.warning(
-                f"LLM returned no tool calls on iteration 0 (preview: {str(response.content)[:100]}...). "
-                "Engaging targeted fallback tools for investigation plan."
-            )
+            # LLM autonomously decides whether to invoke tools or provide direct text
+            return {"messages": [response]}
         except Exception as e:
             logger.error(f"Error during LLM tool reasoning: {e}")
 
-    # Fallback when LLM is offline, dry-run, or failed to invoke tools on iteration 0:
-    if tool_iter == 0:
-        tool_calls = []
-        service_id = plan.get("service_id") or "checkout-api"
-        incident_id = plan.get("incident_id") or "INC-2026-10-28-001"
-        customer_id = plan.get("customer_id") or "acme-corp"
-        intent = plan.get("intent", "incident_investigation")
+    # Fallback only when LLM call fails or is unavailable:
+    intent = plan.get("intent", "incident_investigation")
 
-        if intent in ("historical_rag", "follow_up_question"):
-            # Historical/follow-up: search runbooks, postmortems, prior incidents, and messages
-            query_hint = plan.get("query", "") or "Redis connection pool exhaustion auth-service"
-            tool_calls.append(
-                {
-                    "name": "search_engineering_knowledge",
-                    "args": {"query": f"Redis pool size connection exhaustion runbook postmortem {service_id}"},
-                    "id": "call_kb_hist_001",
-                }
+    if intent == "conversation_memory":
+        import re
+        user_name = None
+        for m in messages:
+            if getattr(m, "type", None) == "human" or getattr(m, "role", None) == "user":
+                txt = str(getattr(m, "content", ""))
+                match = re.search(r'\bmy name is\s+([A-Za-z]+)\b', txt, re.IGNORECASE)
+                if match:
+                    user_name = match.group(1)
+
+        last_q = ""
+        for m in reversed(messages):
+            if getattr(m, "type", None) == "human" or getattr(m, "role", None) == "user":
+                last_q = str(getattr(m, "content", "")).lower()
+                break
+
+        parts = []
+        if "name" in last_q:
+            if user_name:
+                parts.append(f"Your name is {user_name}, as you introduced yourself earlier!")
+            else:
+                parts.append("You have not shared your name yet in this chat.")
+
+        dsa_terms = [
+            "3 sum", "3sum", "two sum", "2sum", "leetcode", "dsa", "data structure",
+            "binary search tree", "bst", "bubble sort", "quick sort", "quicksort",
+            "merge sort", "mergesort", "insertion sort", "linked list", "binary tree",
+            "trie", "knapsack", "dynamic programming", "tower of hanoi", "fibonacci",
+            "palindrome", "prime number", "invert a binary tree", "matrix multiplication",
+            "depth first search", "breadth first search", "dijkstra"
+        ]
+
+        if "first code" in last_q or "what was the code" in last_q:
+            parts.append("Looking at our conversation history, you have not asked for any code yet in this chat.")
+
+        if any(term in last_q for term in dsa_terms):
+            parts.append(
+                "I am AegisRCA, specialized strictly in Site Reliability Engineering (SRE), observability, and production incident investigation. "
+                "I only provide production infrastructure and operational monitoring automation scripts. "
+                "I cannot assist with academic Data Structures & Algorithms (DSA), competitive programming, or LeetCode questions."
             )
-            tool_calls.append(
-                {
-                    "name": "search_engineering_knowledge",
-                    "args": {"query": "similar incident connection pool saturation previous outage"},
-                    "id": "call_kb_hist_001b",
-                }
+        elif "python code" in last_q or "provide code" in last_q:
+            parts.append(
+                "Here is a Python SRE diagnostic script for checking service health and measuring connection latency:\n\n"
+                "```python\n"
+                "import time\n"
+                "import urllib.request\n\n"
+                "def check_service_health(url: str, timeout: int = 5) -> dict:\n"
+                "    start = time.perf_counter()\n"
+                "    try:\n"
+                "        with urllib.request.urlopen(url, timeout=timeout) as resp:\n"
+                "            latency_ms = round((time.perf_counter() - start) * 1000, 2)\n"
+                "            return {'status': 'UP', 'code': resp.status, 'latency_ms': latency_ms}\n"
+                "    except Exception as e:\n"
+                "        return {'status': 'DOWN', 'error': str(e)}\n"
+                "```\n"
+                "Let me know if you would like Python code tailored to a specific service or metric!"
             )
-            tool_calls.append(
-                {
-                    "name": "search_incident_messages",
-                    "args": {"query": "Redis connection pool failure exhaustion saturation", "incident_id": incident_id},
-                    "id": "call_slack_hist_002",
-                }
-            )
-            tool_calls.append(
-                {
-                    "name": "list_known_incidents",
-                    "args": {},
-                    "id": "call_inc_hist_003",
-                }
-            )
-            tool_calls.append(
-                {
-                    "name": "query_service_telemetry",
-                    "args": {
-                        "service_id": service_id,
-                        "start": "2026-10-28T14:00:00Z",
-                        "end": "2026-10-28T14:25:00Z",
-                    },
-                    "id": "call_tel_hist_004",
-                }
-            )
-            tool_calls.append(
-                {
-                    "name": "find_recent_deployments",
-                    "args": {"service_id": service_id},
-                    "id": "call_dep_hist_005",
-                }
+
+        if not parts:
+            parts.append("I have our full conversation history in context. How can I help you continue?")
+
+        return {
+            "messages": [
+                AIMessage(content="\n\n".join(parts))
+            ]
+        }
+
+    if intent == "out_of_domain":
+        last_q = ""
+        for m in reversed(messages):
+            if getattr(m, "type", None) == "human" or getattr(m, "role", None) == "user":
+                last_q = str(getattr(m, "content", "")).lower()
+                break
+        dsa_terms = [
+            "3 sum", "3sum", "two sum", "2sum", "leetcode", "dsa", "data structure",
+            "binary search tree", "bst", "bubble sort", "quick sort", "quicksort",
+            "merge sort", "mergesort", "insertion sort", "linked list", "binary tree",
+            "trie", "knapsack", "dynamic programming", "tower of hanoi", "fibonacci",
+            "palindrome", "prime number", "invert a binary tree", "matrix multiplication",
+            "depth first search", "breadth first search", "dijkstra"
+        ]
+        if any(term in last_q for term in dsa_terms):
+            refusal = (
+                "I am AegisRCA, specialized strictly in Site Reliability Engineering (SRE), observability, and production incident investigation. "
+                "I only provide production infrastructure, monitoring, and operational automation code. "
+                "I cannot assist with academic Data Structures & Algorithms (DSA), competitive programming, or LeetCode questions."
             )
         else:
+            refusal = (
+                "I am AegisRCA, specialized strictly in SRE incident triage, observability, and root cause investigation. "
+                "I cannot assist with non-operational topics. Please ask a question related to production incidents, service reliability, or cloud infrastructure."
+            )
+        return {
+            "messages": [
+                AIMessage(content=refusal)
+            ]
+        }
+
+    if intent == "general_sre_inquiry":
+        return {
+            "messages": [
+                AIMessage(
+                    content=(
+                        "Hello! I am AegisRCA, your autonomous Site Reliability Engineering (SRE) and Incident Investigation Assistant. "
+                        "You can ask me to investigate active or historical incidents, trace service topologies, query telemetry metrics, or review SLA compliance."
+                    )
+                )
+            ]
+        }
+
+    if tool_iter == 0:
+        tool_calls = []
+        service_id = plan.get("service_id")
+        incident_id = plan.get("incident_id")
+        customer_id = plan.get("customer_id")
+
+        if incident_id:
+            tool_calls.append(
+                {
+                    "name": "get_incident_details",
+                    "args": {"incident_id": incident_id},
+                    "id": "call_inc_001",
+                }
+            )
+        if service_id:
             tool_calls.append(
                 {
                     "name": "trace_service_dependencies",
                     "args": {"service_id": service_id},
-                    "id": "call_topo_001",
+                    "id": "call_topo_002",
                 }
             )
             tool_calls.append(
                 {
                     "name": "find_recent_deployments",
-                    "args": {"service_id": "auth-service"},
-                    "id": "call_dep_002",
+                    "args": {"service_id": service_id},
+                    "id": "call_dep_003",
                 }
             )
-            if service_id != "auth-service":
-                tool_calls.append(
-                    {
-                        "name": "find_recent_deployments",
-                        "args": {"service_id": service_id},
-                        "id": "call_dep_002b",
-                    }
-                )
+            time_range = plan.get("time_range") or {}
+            tel_args = {"service_id": service_id}
+            if time_range.get("start"):
+                tel_args["start"] = time_range["start"]
+            if time_range.get("end"):
+                tel_args["end"] = time_range["end"]
             tool_calls.append(
                 {
                     "name": "query_service_telemetry",
-                    "args": {
-                        "service_id": service_id,
-                        "start": "2026-10-28T14:00:00Z",
-                        "end": "2026-10-28T14:25:00Z",
-                    },
-                    "id": "call_tel_003",
+                    "args": tel_args,
+                    "id": "call_tel_004",
                 }
             )
+        if not service_id and not incident_id:
             tool_calls.append(
                 {
-                    "name": "search_engineering_knowledge",
-                    "args": {"query": "Redis connection pool reduction PR #812 config auth-service"},
-                    "id": "call_kb_004",
+                    "name": "list_known_incidents",
+                    "args": {},
+                    "id": "call_inc_list_001",
                 }
             )
-            tool_calls.append(
-                {
-                    "name": "search_incident_messages",
-                    "args": {"query": "DDoS Redis pool saturation 504", "incident_id": incident_id},
-                    "id": "call_slack_005",
-                }
-            )
+        if customer_id:
             tool_calls.append(
                 {
                     "name": "retrieve_customer_sla",
                     "args": {"customer_id": customer_id},
-                    "id": "call_sla_006",
+                    "id": "call_sla_005",
                 }
             )
 
@@ -201,7 +245,7 @@ def agent_node(state: AgentState) -> dict[str, Any]:
             return {
                 "messages": [
                     AIMessage(
-                        content="Initiating targeted retrieval tools across dependencies, deployments, telemetry, engineering knowledge, discussions, and SLA...",
+                        content="Initiating targeted retrieval tools based on the investigation plan...",
                         tool_calls=tool_calls,
                     )
                 ]
@@ -293,16 +337,16 @@ def execute_tools(state: AgentState) -> dict[str, Any]:
 
                         if "incident" in parsed and isinstance(parsed["incident"], dict):
                             inc = parsed["incident"]
-                            inc_id = inc.get("incident_id", "INC-2026-10-28-001")
+                            inc_id = inc.get("incident_id") or "INC-RECORD"
                             title = inc.get("title") or f"Incident Record {inc_id}"
                             rc_summary = inc.get("root_cause_summary") or inc.get("summary") or ""
                             start_ts = inc.get("start_time")
                             end_ts = inc.get("end_time")
                             downtime = inc.get("downtime_minutes")
                             affected = inc.get("affected_services", [])
-                            affected_str = ", ".join(affected) if affected else "checkout-api, auth-service"
+                            affected_str = ", ".join(affected) if affected else "service"
                             severity = inc.get("severity", "P1")
-                            cust = inc.get("customer_id", "acme-corp")
+                            cust = inc.get("customer_id") or "unspecified-customer"
 
                             content_lines = [
                                 f"Incident Record: {inc_id}",
@@ -321,7 +365,7 @@ def execute_tools(state: AgentState) -> dict[str, Any]:
                                 "source_id": inc_id,
                                 "title": f"Incident Record {inc_id}: {title}",
                                 "content": "\n".join(content_lines),
-                                "service_id": affected[0] if affected else "checkout-api",
+                                "service_id": affected[0] if affected else "global",
                                 "timestamp": start_ts,
                                 "citation": {
                                     "file_name": f"{inc_id}.json",
@@ -338,12 +382,12 @@ def execute_tools(state: AgentState) -> dict[str, Any]:
                             result_count += 1
 
                         pdf_file_id = parsed.get("pdf_file_id")
-                        contract_file = parsed.get("file_name", "SLA_SLA-ACME-001.pdf")
+                        cust = parsed.get("customer_id") or "unspecified-customer"
+                        contract_file = parsed.get("file_name") or f"SLA_{cust.upper()}.pdf"
                         clauses = parsed.get("clauses", [])
 
                         if "assessment" in parsed and isinstance(parsed["assessment"], dict):
                             asmt = parsed["assessment"]
-                            cust = parsed.get("customer_id", "acme-corp")
                             evidence_items.append({
                                 "evidence_id": f"EVD-SLA-{cust}",
                                 "source_type": "pdf_contract",

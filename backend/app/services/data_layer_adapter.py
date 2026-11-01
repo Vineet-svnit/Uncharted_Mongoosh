@@ -122,7 +122,7 @@ class DataLayerAdapter:
 
     def find_recent_deployments(
         self,
-        service_id: str,
+        service_id: str | None = None,
         start: str | None = None,
         end: str | None = None,
     ) -> list[EvidenceItem]:
@@ -138,12 +138,13 @@ class DataLayerAdapter:
             desc = dep.get("change_description") or dep.get("description", "")
             diff = dep.get("code_diff") or dep.get("diff_summary", "")
             files = dep.get("files_changed", [])
-            primary_file = files[0] if files else f"deployments_{service_id}.json"
+            svc_name = dep.get("service_id", service_id or "system")
+            primary_file = files[0] if files else f"deployments_{svc_name}.json"
 
             content_lines = [
                 f"Deployment: {dep_id} ({pr_label})",
                 f"Commit: {commit} by {author} at {deployed_at}",
-                f"Service: {dep.get('service_id', service_id)}",
+                f"Service: {svc_name}",
                 f"Files Changed: {', '.join(files) if files else primary_file}",
                 f"Change Summary: {desc}",
             ]
@@ -164,7 +165,7 @@ class DataLayerAdapter:
                     source_id=pr_label,
                     title=f"Deployment {dep_id} ({pr_label}): {desc[:50]}...",
                     content="\n".join(content_lines),
-                    service_id=dep.get("service_id", service_id),
+                    service_id=svc_name,
                     timestamp=deployed_at,
                     citation=citation,
                     retrieval_method="direct_query",
@@ -244,7 +245,7 @@ class DataLayerAdapter:
         return items
 
     def query_service_telemetry(
-        self, service_id: str, start: str, end: str
+        self, service_id: str, start: str | None = None, end: str | None = None
     ) -> list[EvidenceItem]:
         raw_events = dl_query_telemetry(service_id=service_id, start=start, end=end)
         items = []

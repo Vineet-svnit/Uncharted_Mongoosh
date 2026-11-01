@@ -472,35 +472,45 @@ def query_telemetry(
     db = get_db()
     col = db[cfg.col_telemetry]
 
-    match: dict[str, Any] = {"service_id": service_id}
+    def _do_query(s_str, e_str):
+        str_match: dict[str, Any] = {"service_id": service_id}
+        time_filter: dict = {}
+        if s_str is not None:
+            time_filter["$gte"] = s_str
+        if e_str is not None:
+            time_filter["$lte"] = e_str
+        if time_filter:
+            str_match["timestamp"] = time_filter
+        cursor = col.find(str_match, {"_id": 0}).sort("timestamp", ASCENDING)
+        return [_clean(doc) for doc in cursor]
 
-    time_filter: dict = {}
+    s_str = None
     if start is not None:
-        time_filter["$gte"] = _parse_datetime(start)
+        try:
+            s_str = _parse_datetime(start).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except Exception:
+            s_str = str(start)
+
+    e_str = None
     if end is not None:
-        time_filter["$lte"] = _parse_datetime(end)
-    if time_filter:
-        match["timestamp"] = time_filter
+        try:
+            e_str = _parse_datetime(end).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except Exception:
+            e_str = str(end)
 
-    # For the timestamp range query, convert ISO strings stored as strings
-    # We store timestamps as ISO strings, so we use string comparison (works for ISO-8601)
-    # OR re-query using string-based filters.
-    # Since we store timestamps as ISO strings, convert datetime → string range:
-    str_match: dict[str, Any] = {"service_id": service_id}
-    if start is not None:
-        s = _parse_datetime(start)
-        start_str = s.strftime("%Y-%m-%dT%H:%M:%SZ")
-        time_str_filter: dict = {"$gte": start_str}
-        if end is not None:
-            e = _parse_datetime(end)
-            time_str_filter["$lte"] = e.strftime("%Y-%m-%dT%H:%M:%SZ")
-        str_match["timestamp"] = time_str_filter
-    elif end is not None:
-        e = _parse_datetime(end)
-        str_match["timestamp"] = {"$lte": e.strftime("%Y-%m-%dT%H:%M:%SZ")}
+    results = _do_query(s_str, e_str)
 
-    cursor = col.find(str_match, {"_id": 0}).sort("timestamp", ASCENDING)
-    return [_clean(doc) for doc in cursor]
+    # Dynamic fallback: if an explicit time filter was passed but returned 0 events
+    # (e.g. timeframe mismatch or offset), retrieve available telemetry for this service
+    if not results and (start is not None or end is not None):
+        log.warning(
+            "query_telemetry: no records found for service=%s in specified range %s - %s. "
+            "Falling back to retrieving available telemetry for service.",
+            service_id, start, end
+        )
+        results = _do_query(None, None)
+
+    return results
 
 
 # --------------------------------------------------------------------------- #
@@ -608,38 +618,91 @@ def search_sla(customer_id: str) -> list[dict]:
 # --------------------------------------------------------------------------- #
 
 def get_deployments(
-    service_id: str,
+    service_id: str | None = None,
     start=None,
     end=None,
 ) -> list[dict]:
     """
-    Retrieve deployment records for a service, optionally within a time range.
+    Retrieve deployment records for a service or cluster, optionally within a time range.
+
+    Deployments that *cause* an incident occur *before* the failure onset.
+    The search window is dynamically expanded by 3 hours before `start` to capture pre-incident
+    change events. If no deployments are found for the specific service (e.g. an API failed
+    due to a downstream dependency change), this function queries MongoDB `services` collection
+    to find dependent services and check deployments across those dependencies.
 
     Args:
-        service_id: Service to filter on.
+        service_id: Service to filter on. If None, retrieves deployments across all services.
         start:      Optional start datetime / ISO string.
         end:        Optional end datetime / ISO string.
 
     Returns:
         List of deployment dicts sorted chronologically.
     """
+    from datetime import timedelta
+
     db = get_db()
     col = db[cfg.col_deployments]
 
-    match: dict[str, Any] = {"service_id": service_id}
+    def _do_query(s_str, e_str, svc):
+        match: dict[str, Any] = {}
+        if svc:
+            match["service_id"] = svc
+        time_filter: dict = {}
+        if s_str:
+            time_filter["$gte"] = s_str
+        if e_str:
+            time_filter["$lte"] = e_str
+        if time_filter:
+            match["deployed_at"] = time_filter
+        cursor = col.find(match, {"_id": 0}).sort("deployed_at", ASCENDING)
+        return [_clean(doc) for doc in cursor]
 
-    time_filter: dict = {}
+    # Dynamically expand window: start - 3 hours, end + 30 min
+    s_expanded = None
     if start is not None:
-        s = _parse_datetime(start)
-        time_filter["$gte"] = s.strftime("%Y-%m-%dT%H:%M:%SZ")
-    if end is not None:
-        e = _parse_datetime(end)
-        time_filter["$lte"] = e.strftime("%Y-%m-%dT%H:%M:%SZ")
-    if time_filter:
-        match["deployed_at"] = time_filter
+        try:
+            s_dt = _parse_datetime(start)
+            s_expanded = (s_dt - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except Exception:
+            s_expanded = str(start)
 
-    cursor = col.find(match, {"_id": 0}).sort("deployed_at", ASCENDING)
-    return [_clean(doc) for doc in cursor]
+    e_expanded = None
+    if end is not None:
+        try:
+            e_dt = _parse_datetime(end)
+            e_expanded = (e_dt + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except Exception:
+            e_expanded = str(end)
+
+    results = _do_query(s_expanded, e_expanded, service_id)
+
+    # Fallback 1: retry without time filter if empty
+    if not results and (start is not None or end is not None):
+        results = _do_query(None, None, service_id)
+
+    # Fallback 2: Microservice dependency traversal
+    # If no deployments exist for this service, query MongoDB services collection
+    # for services it depends on (e.g. checkout-api depends on auth-service)
+    if not results and service_id:
+        try:
+            svc_doc = db[cfg.col_services].find_one({"service_id": service_id})
+            if svc_doc and svc_doc.get("depends_on"):
+                deps_list = svc_doc["depends_on"]
+                dep_match = {"service_id": {"$in": deps_list}}
+                cursor_deps = col.find(dep_match, {"_id": 0}).sort("deployed_at", ASCENDING)
+                dep_results = [_clean(doc) for doc in cursor_deps]
+                if dep_results:
+                    results = dep_results
+        except Exception as err:
+            log.warning("Could not traverse dependencies for deployments: %s", err)
+
+    # Fallback 3: if still empty, retrieve recent cluster deployments
+    if not results and service_id:
+        cursor_all = col.find({}, {"_id": 0}).sort("deployed_at", -1).limit(10)
+        results = [_clean(doc) for doc in cursor_all]
+
+    return results
 
 
 # --------------------------------------------------------------------------- #

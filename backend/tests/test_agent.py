@@ -114,3 +114,89 @@ def test_report_generator_schema_conformance():
     assert report["root_cause"] is not None
     assert len(report["recommendations"]) > 0
 
+
+def test_out_of_domain_and_greeting_zero_tools():
+    """Verify out-of-domain and greeting queries produce zero tool calls and complete cleanly."""
+    from app.graph.nodes import agent_node
+
+    # 1. Out of domain query
+    ood_state = {
+        "messages": [HumanMessage(content="What is the capital of France?")],
+        "investigation_plan": {},
+        "evidence_items": [],
+        "tool_iterations": 0,
+        "run_id": "test_ood",
+        "thread_id": "test_ood",
+    }
+    plan_res = plan_investigation(ood_state)
+    assert plan_res["investigation_plan"]["intent"] == "out_of_domain"
+    ood_state["investigation_plan"] = plan_res["investigation_plan"]
+
+    # Agent node should make zero tool calls
+    agent_res = agent_node(ood_state)
+    last_msg = agent_res["messages"][-1]
+    assert not getattr(last_msg, "tool_calls", None)
+    assert "AegisRCA" in str(last_msg.content)
+    ood_state["messages"].append(last_msg)
+
+    # Route after agent should go directly to verifier
+    assert route_after_agent(ood_state) == "verifier"
+
+    # Route after verifier should proceed to report_generator without looping
+    assert route_after_verifier(ood_state) == "report_generator"
+
+    # Report generator should record completed status with the agent's refusal response
+    rep_res = generate_report(ood_state)
+    assert rep_res["investigation_status"] == "completed"
+    assert "AegisRCA" in rep_res["investigation_result"]["summary"]
+
+
+def test_insufficient_evidence_when_no_data():
+    """Verify that when tools find zero evidence for an incident, the agent reports insufficient evidence and next steps."""
+    empty_ev_state = {
+        "messages": [HumanMessage(content="Why did payment-service fail at 10:00 UTC?")],
+        "investigation_plan": {
+            "intent": "incident_investigation",
+            "service_id": "payment-service",
+            "incident_id": None,
+        },
+        "evidence_items": [],
+        "tool_iterations": 1,
+        "verification_attempts": 1,
+        "run_id": "test_empty_ev",
+        "thread_id": "test_empty_ev",
+    }
+    rep_res = generate_report(empty_ev_state)
+    assert rep_res["investigation_status"] == "insufficient_evidence"
+    result = rep_res["investigation_result"]
+    assert "cannot be answered from the available context" in result["summary"].lower()
+    assert "not sure" in result["summary"].lower() or "insufficient" in result["summary"].lower()
+    assert result["root_cause"]["status"] == "unknown"
+    assert len(result["missing_evidence"]) > 0
+    assert len(result["recommendations"]) > 0
+
+
+def test_dsa_query_hardrailing_refusal():
+    """Verify DSA, LeetCode, and competitive programming queries are strictly rejected as out-of-domain."""
+    from app.graph.nodes import agent_node
+
+    dsa_state = {
+        "messages": [HumanMessage(content="can you provide me python code for 3 sum problem?")],
+        "investigation_plan": {},
+        "evidence_items": [],
+        "tool_iterations": 0,
+        "run_id": "test_dsa",
+        "thread_id": "test_dsa",
+    }
+    plan_res = plan_investigation(dsa_state)
+    assert plan_res["investigation_plan"]["intent"] == "out_of_domain"
+    dsa_state["investigation_plan"] = plan_res["investigation_plan"]
+
+    agent_res = agent_node(dsa_state)
+    last_msg = agent_res["messages"][-1]
+    # Must not invoke any tools
+    assert not getattr(last_msg, "tool_calls", None)
+    # Must refuse DSA specifically
+    assert "data structures & algorithms" in str(last_msg.content).lower() or "leetcode" in str(last_msg.content).lower() or "dsa" in str(last_msg.content).lower()
+    assert "production" in str(last_msg.content).lower() or "sre" in str(last_msg.content).lower()
+

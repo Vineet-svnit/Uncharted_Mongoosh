@@ -24,64 +24,69 @@ class EvidenceReview(BaseModel):
 
 
 VERIFIER_PROMPT = """You are the Evidence Verification Specialist for AegisRCA.
-Your job is to rigorously review the collected evidence and evaluate:
-1. Is there direct evidence for the suspected configuration change?
-2. Did that deployment occur before the incident?
-3. Is there telemetry confirming the suspected failure?
-4. Does the service dependency graph support the proposed failure path?
-5. Is there contradictory evidence (e.g. DDoS rumors vs actual ingress telemetry)?
-6. Is there critical missing information (e.g. data leak inquiry without audit logs)?
-7. Can the SLA decision actually be calculated from retrieved contract clauses?
+Your job is to rigorously review the collected evidence against the user's investigation plan and evaluate:
+1. Is there direct evidence for any suspected configuration change or deployment?
+2. Did deployments or changes occur prior to the failure onset?
+3. Is there telemetry confirming the suspected failure mechanism?
+4. Does the microservice dependency topology support the proposed failure propagation path?
+5. Are there contradictions between responder chat hypotheses and hard telemetry facts?
+6. Is critical evidence missing (e.g. data leak allegations without audit logs, latency spikes without telemetry)?
+7. Can SLA rulings be calculated directly from retrieved contract clauses?
 
-Be conservative. Do not claim sufficient evidence if a vital causal link is missing.
-IMPORTANT: If ANY evidence has been collected (even partial), mark sufficient_evidence=True unless there is a specific critical gap.
-Only mark sufficient_evidence=False if zero tools were called and zero evidence was collected.
-Output strictly following the JSON schema.
+GUIDELINES:
+- If the inquiry is a greeting, general SRE concept question, or out-of-domain query, mark sufficient_evidence=True with no missing info.
+- If tools were run and gathered evidence that supports a causal conclusion, mark sufficient_evidence=True.
+- If essential evidence is missing for an incident investigation, mark sufficient_evidence=False and specify missing_information and recommended_searches.
+- Output strictly following the JSON schema.
 """
 
 
 def _heuristic_verifier(evidence_items: list[dict[str, Any]], plan: dict[str, Any]) -> EvidenceReview:
     """Deterministic verifier for verification logic."""
-    service_id = plan.get("service_id", "")
-    incident_id = plan.get("incident_id", "")
+    intent = plan.get("intent", "incident_investigation")
+    service_id = plan.get("service_id")
+    incident_id = plan.get("incident_id")
 
-    has_pr = any(
-        e.get("source_type") in ["pr_diff", "deployment_pr"] or "PR-812" in str(e)
-        for e in evidence_items
-    )
-    has_telemetry = any(
-        e.get("source_type") == "telemetry" or "METRIC" in str(e) for e in evidence_items
-    )
-    has_contradiction = any(
-        e.get("classification") == "contradicting" or "DDoS" in str(e.get("content", ""))
-        for e in evidence_items
-    )
-
-    contradictions = []
-    if has_contradiction:
-        contradictions.append(
-            "Initial Slack speculation proposed an external DDoS attack, but ingress telemetry demonstrates external traffic remained at normal baseline (1210 req/s), ruling out DDoS."
+    # Non-investigation queries never require tool evidence
+    if intent in ("out_of_domain", "general_sre_inquiry", "clarification_needed", "conversation_memory"):
+        return EvidenceReview(
+            sufficient_evidence=True,
+            missing_information=[],
+            contradictions=[],
+            recommended_searches=[],
+            confidence_level="high",
         )
 
-    # Missing evidence check for PII scenario
-    if incident_id == "INC-2026-10-15-002" or "pii" in str(plan).lower():
+    # Dynamic contradiction extraction from collected evidence
+    contradictions = []
+    for e in evidence_items:
+        if e.get("classification") == "contradicting":
+            c_desc = e.get("content") or e.get("title") or "Contradicting signal observed."
+            if "ddos" in c_desc.lower():
+                contradictions.append(
+                    "Initial responder speculation hypothesized an external DDoS attack, but ingress telemetry demonstrates traffic remained within normal baseline, ruling out DDoS."
+                )
+            else:
+                contradictions.append(f"Contradiction noted: {c_desc[:200]}")
+
+    # Missing evidence check for PII / data leak scenario
+    if (incident_id and "10-15-002" in incident_id) or "pii" in str(plan).lower():
         has_audit_logs = any("audit" in str(e).lower() or "dlp" in str(e).lower() for e in evidence_items)
         if not has_audit_logs:
             return EvidenceReview(
                 sufficient_evidence=False,
                 missing_information=[
-                    "No DLP or data exfiltration audit logs found for the EU cluster memory exhaustion event."
+                    "No DLP or data exfiltration audit logs found to substantiate unencrypted PII exposure."
                 ],
-                contradictions=[],
+                contradictions=contradictions,
                 recommended_searches=["search_audit_logs", "query_dlp_records"],
                 confidence_level="unknown",
             )
 
     missing = []
-    # Only block as insufficient if NO evidence whatsoever was collected.
-    # If tools ran and returned any evidence, allow the report generator to synthesize.
-    if len(evidence_items) == 0 and service_id:
-        missing.append(f"No evidence collected for {service_id} — no tools have run yet.")
+    if len(evidence_items) == 0 and (service_id or incident_id):
+        target = service_id or incident_id
+        missing.append(f"No evidence records or telemetry collected for {target}.")
 
     sufficient = len(missing) == 0
 
@@ -99,6 +104,13 @@ def verify_evidence(state: AgentState) -> dict[str, Any]:
     evidence_items = state.get("evidence_items", [])
     plan = state.get("investigation_plan", {})
     attempts = state.get("verification_attempts", 0)
+
+    # If non-investigation intent, skip LLM verifier
+    if plan.get("intent") in ("out_of_domain", "general_sre_inquiry", "clarification_needed", "conversation_memory"):
+        return {
+            "verification_feedback": None,
+            "verification_attempts": attempts + 1,
+        }
 
     review: EvidenceReview | None = None
 
@@ -125,7 +137,6 @@ def verify_evidence(state: AgentState) -> dict[str, Any]:
     if review is None:
         review = _heuristic_verifier(evidence_items, plan)
 
-    # If verification failed but max retries reached, mark qualified conclusion
     feedback = None
     if not review.sufficient_evidence:
         feedback = f"Missing evidence: {', '.join(review.missing_information)}. Recommendations: {', '.join(review.recommended_searches)}"

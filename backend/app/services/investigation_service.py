@@ -91,6 +91,7 @@ class InvestigationService:
                     for node_name, node_output in event.items():
                         if node_name == "planner":
                             plan = node_output.get("investigation_plan", {})
+                            intent = plan.get("intent", "incident_investigation")
                             if plan.get("needs_clarification"):
                                 yield self._sse_pack(
                                     "status",
@@ -99,13 +100,22 @@ class InvestigationService:
                                         "message": plan.get("clarification_question", "Clarification needed"),
                                     },
                                 )
+                            elif intent in ("out_of_domain", "general_sre_inquiry"):
+                                yield self._sse_pack(
+                                    "status",
+                                    {
+                                        "stage": "responding",
+                                        "message": "Formulating direct response",
+                                    },
+                                )
                             else:
                                 sources = plan.get("required_sources", [])
+                                msg = f"Identified scope. Required investigation sources: {', '.join(sources)}" if sources else "Investigating system state..."
                                 yield self._sse_pack(
                                     "status",
                                     {
                                         "stage": "planning_complete",
-                                        "message": f"Identified scope. Required investigation sources: {', '.join(sources)}",
+                                        "message": msg,
                                     },
                                 )
 

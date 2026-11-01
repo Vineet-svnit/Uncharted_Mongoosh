@@ -72,16 +72,16 @@ def trace_service_dependencies(
 
 @tool
 def find_recent_deployments(
-    service_id: str,
+    service_id: str | None = None,
     start: str | None = None,
     end: str | None = None,
 ) -> str:
     """Find CI/CD deployments and GitHub PR merges that occurred around an incident time window.
 
     Args:
-        service_id: Service ID to check deployments for (e.g. 'auth-service', 'checkout-api').
-        start: Start of time window in ISO-8601 (e.g. '2026-10-28T13:30:00Z').
-        end: End of time window in ISO-8601 (e.g. '2026-10-28T14:30:00Z').
+        service_id: Optional service ID to check deployments for (e.g. 'auth-service', 'checkout-api'). If omitted or if no deployments exist for this service, automatically checks connected microservice dependencies.
+        start: Optional start of time window in ISO-8601.
+        end: Optional end of time window in ISO-8601.
     """
     try:
         evidence = adapter.find_recent_deployments(
@@ -130,15 +130,15 @@ def search_engineering_knowledge(
 @tool
 def query_service_telemetry(
     service_id: str,
-    start: str,
-    end: str,
+    start: str | None = None,
+    end: str | None = None,
 ) -> str:
-    """Retrieve telemetry metrics and error logs for a service during a specific incident window.
+    """Retrieve telemetry metrics and error logs for a service during a specific incident window or overall.
 
     Args:
         service_id: Service ID (e.g. 'checkout-api', 'auth-service', 'redis-cluster-east').
-        start: Start timestamp in ISO-8601 (e.g. '2026-10-28T14:00:00Z').
-        end: End timestamp in ISO-8601 (e.g. '2026-10-28T14:25:00Z').
+        start: Optional start timestamp in ISO-8601. If omitted, retrieves available operational telemetry for the service.
+        end: Optional end timestamp in ISO-8601.
     """
     try:
         evidence = adapter.query_service_telemetry(

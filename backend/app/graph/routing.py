@@ -34,13 +34,15 @@ def route_after_verifier(state: AgentState) -> str:
     attempts = state.get("verification_attempts", 0)
     tool_iterations = state.get("tool_iterations", 0)
 
-    # If verification failed and we haven't exceeded retry limits, retry targeted retrieval
+    # Only loop back for targeted retrieval if tools have already executed (tool_iterations > 0)
+    # and feedback indicates missing information. If tool_iterations == 0 (e.g. direct text response),
+    # proceed directly to report generation to prevent unwanted loops.
     if (
         feedback
+        and tool_iterations > 0
         and attempts <= settings.max_verification_attempts
         and tool_iterations < settings.max_tool_iterations
     ):
         return "agent"
 
     return "report_generator"
-
