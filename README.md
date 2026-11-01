@@ -460,15 +460,19 @@ flowchart TD
 
 ### 7.2 MongoDB Search Indexes Summary
 
-| Collection | Vector Index | Text Index | Regular Indexes |
+> [!NOTE]
+> MongoDB Atlas Free Tier (M0) allows at most **3 Search Indexes** across the cluster. We allocate all 3 slots exclusively to Vector Search indexes. Standard B-tree indexes are unlimited.
+
+| Collection | Vector Index | Search Index (Free Tier) | Regular B-tree Indexes |
 |---|---|---|---|
-| `knowledge_chunks` | `vector_knowledge` (1024-dim cosine) | `text_knowledge` (content, title) | `service_id`, `source_type`, `incident_id` |
-| `incident_messages` | `vector_messages` (1024-dim cosine) | `text_messages` (text, channel) | `incident_id` |
-| `visual_evidence` | `vector_visual` (1024-dim cosine) | — | `incident_id` |
-| `services` | — | — | `service_id + environment + topology_version` |
-| `deployments` | — | — | `service_id + deployed_at` |
-| `telemetry_events` | — | — | `service_id + timestamp` |
-| `sla_clauses` | — | — | `customer_id + is_active` |
+| `knowledge_chunks` | `knowledge_vector_idx` (1024-dim cosine) | Vector Search (1 of 3) | `document_id (unique)`, `source_type` |
+| `incident_messages` | `messages_vector_idx` (1024-dim cosine) | Vector Search (2 of 3) | `message_id (unique)`, `incident_id + timestamp`, `channel` |
+| `visual_evidence` | `visual_vector_idx` (1024-dim cosine) | Vector Search (3 of 3) | `evidence_id (unique)` |
+| `services` | — | — | `service_id (unique)`, `environment + topology_version` |
+| `deployments` | — | — | `deployment_id (unique)`, `service_id + deployed_at`, `pr_number + commit_hash` |
+| `telemetry_events` | — | — | `service_id + env + timestamp`, `incident_id + timestamp`, `metric_name` |
+| `sla_clauses` | — | — | `customer_id + contract_version` |
+| `incidents` | — | — | `incident_id (unique)`, `status + start_time` |
 
 ### 7.3 Topology Traversal — `$graphLookup`
 

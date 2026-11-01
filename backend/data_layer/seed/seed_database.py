@@ -76,13 +76,20 @@ GRIDFS_BUCKET = "fs"
 
 def reset_database(db) -> None:
     log.info("Resetting AegisRCA collections …")
+    existing_cols = db.list_collection_names()
     for name in KNOWN_COLLECTIONS:
-        db.drop_collection(name)
-        log.info("  Dropped collection: %s", name)
+        if name in existing_cols:
+            db[name].delete_many({})
+            log.info("  Cleared documents in collection: %s", name)
+        else:
+            db.create_collection(name)
+            log.info("  Created collection: %s", name)
     # GridFS
-    db.drop_collection("fs.files")
-    db.drop_collection("fs.chunks")
-    log.info("  Dropped GridFS collections.")
+    if "fs.files" in existing_cols:
+        db["fs.files"].delete_many({})
+    if "fs.chunks" in existing_cols:
+        db["fs.chunks"].delete_many({})
+    log.info("  Cleared GridFS collections.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

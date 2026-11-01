@@ -255,39 +255,15 @@ def search_knowledge(
         {"$project": {"embedding": 0, "_id": 0}},
     ]
 
-    # --- BM25 ($search) pipeline ---
-    search_clauses: list[dict] = [{"text": {"query": query, "path": ["content", "title"]}}]
-    if safe_filters:
-        for k, v in safe_filters.items():
-            search_clauses.append({"equals": {"path": k, "value": v}})
-
-    bm25_pipeline: list[dict] = [
-        {
-            "$search": {
-                "index": cfg.text_idx_knowledge,
-                "compound": {
-                    "must": [search_clauses[0]],
-                    "filter": [
-                        {"equals": {"path": k, "value": v}}
-                        for k, v in safe_filters.items()
-                    ] if safe_filters else [],
-                },
-            }
-        },
-        {"$limit": limit * 4},
-        {"$addFields": {"bm25_score": {"$meta": "searchScore"}}},
-        {"$project": {"embedding": 0, "_id": 0}},
-    ]
-
-    # --- Combine using native $rankFusion or RRF fusion fallback ---
-    # Retrieve top X candidates (X >= Y) for potential downstream reranking
+    # --- Atlas Vector Search & Reranking (Atlas Free Tier compliant: 3 vector indexes) ---
+    # Retrieve top X candidates (X >= Y) for downstream reranking via Voyage AI
     candidate_limit = max(limit * 3, 12)
     results = _execute_hybrid_search(
         col=col,
         vector_pipeline=vector_pipeline,
-        bm25_pipeline=bm25_pipeline,
+        bm25_pipeline=None,
         vector_index=cfg.vector_idx_knowledge,
-        text_index=cfg.text_idx_knowledge,
+        text_index=None,
         id_field="document_id",
         limit=candidate_limit,
     )
@@ -354,17 +330,25 @@ def _reciprocal_rank_fusion(
 def _execute_hybrid_search(
     col,
     vector_pipeline: list[dict],
-    bm25_pipeline: list[dict],
+    bm25_pipeline: list[dict] | None,
     vector_index: str,
-    text_index: str,
+    text_index: str | None,
     id_field: str,
     limit: int,
 ) -> list[dict]:
     """
-    Attempt native MongoDB 8.0 $rankFusion.
-    If the server throws code 40324 (unrecognized pipeline stage),
-    run both sub-pipelines and combine ranks via Reciprocal Rank Fusion.
+    Execute search across candidate documents.
+    If BM25 pipeline and text index are omitted (as on Atlas Free Tier with 3-index cap),
+    runs vector_pipeline directly.
+    Otherwise attempts native $rankFusion or Reciprocal Rank Fusion.
     """
+    if not bm25_pipeline or not text_index:
+        try:
+            return list(col.aggregate(vector_pipeline))[:limit]
+        except OperationFailure as exc:
+            _raise_index_error(exc, vector_index, col.name)
+            return []
+
     if _version_supports_rank_fusion():
         pipeline = _rank_fusion_pipeline(
             vector_pipeline, bm25_pipeline,
@@ -563,32 +547,13 @@ def search_messages(
         {"$project": {"embedding": 0, "_id": 0}},
     ]
 
-    bm25_compound = {
-        "must": [{"text": {"query": query, "path": "text"}}],
-    }
-    if incident_id:
-        bm25_compound["filter"] = [
-            {"equals": {"path": "incident_id", "value": incident_id}}
-        ]
-
-    bm25_pipeline: list[dict] = [
-        {
-            "$search": {
-                "index": cfg.text_idx_messages,
-                "compound": bm25_compound,
-            }
-        },
-        {"$limit": limit * 4},
-        {"$addFields": {"bm25_score": {"$meta": "searchScore"}}},
-        {"$project": {"embedding": 0, "_id": 0}},
-    ]
-
+    # --- Atlas Vector Search (Atlas Free Tier compliant: 3 vector indexes) ---
     results = _execute_hybrid_search(
         col=col,
         vector_pipeline=vector_pipeline,
-        bm25_pipeline=bm25_pipeline,
+        bm25_pipeline=None,
         vector_index=cfg.vector_idx_messages,
-        text_index=cfg.text_idx_messages,
+        text_index=None,
         id_field="message_id",
         limit=limit,
     )

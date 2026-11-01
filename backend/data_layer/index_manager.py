@@ -95,45 +95,12 @@ def _ensure_regular_indexes(db: Database) -> None:
 
 
 # ── Atlas Search (BM25) index definitions ─────────────────────────────────────
+# NOTE: MongoDB Atlas Free Tier (M0) allows a maximum of 3 search indexes across
+# the entire cluster. To strictly obey this limit, we keep only the 3 Vector Search
+# indexes defined in _VECTOR_INDEXES below and omit BM25 text search indexes.
+_SEARCH_INDEXES: list[dict[str, Any]] = []
 
-_SEARCH_INDEXES: list[dict[str, Any]] = [
-    {
-        "collection": cfg.col_knowledge,
-        "name": cfg.text_idx_knowledge,
-        "definition": {
-            "mappings": {
-                "dynamic": False,
-                "fields": {
-                    "content": {"type": "string", "analyzer": "lucene.english"},
-                    "title": {"type": "string", "analyzer": "lucene.english"},
-                    "source_type": {"type": "token"},
-                    "service_id": {"type": "token"},
-                    "incident_id": {"type": "token"},
-                    "customer_id": {"type": "token"},
-                    "environment": {"type": "token"},
-                },
-            }
-        },
-    },
-    {
-        "collection": cfg.col_messages,
-        "name": cfg.text_idx_messages,
-        "definition": {
-            "mappings": {
-                "dynamic": False,
-                "fields": {
-                    "text": {"type": "string", "analyzer": "lucene.english"},
-                    "sender": {"type": "token"},
-                    "channel": {"type": "token"},
-                    "incident_id": {"type": "token"},
-                },
-            }
-        },
-    },
-]
-
-# ── Atlas Vector Search index definitions ─────────────────────────────────────
-
+# ── Atlas Vector Search index definitions (Exactly 3 indexes for Atlas Free Tier) ─
 _VECTOR_INDEXES: list[dict[str, Any]] = [
     {
         "collection": cfg.col_knowledge,
@@ -188,6 +155,38 @@ _VECTOR_INDEXES: list[dict[str, Any]] = [
 ]
 
 
+def _clean_non_vector_search_indexes(db: Database) -> None:
+    """
+    Ensure no legacy BM25 / text search indexes occupy slots on MongoDB Atlas Free Tier (max 3).
+    Drops any search index on collections that is not one of our 3 designated vector indexes.
+    """
+    valid_vector_names = {idx["name"] for idx in _VECTOR_INDEXES}
+    cols_to_check = set(db.list_collection_names()) | {cfg.col_knowledge, cfg.col_messages, cfg.col_visual}
+    dropped_any = False
+
+    for col_name in cols_to_check:
+        if col_name.startswith("system.") or col_name.startswith("fs."):
+            continue
+        try:
+            col = db[col_name]
+            for info in list(col.list_search_indexes()):
+                name = info.get("name")
+                # If this search index is not one of our 3 valid vector indexes, drop it to free quota
+                if name and name not in valid_vector_names:
+                    logger.info("Dropping legacy search index '%s' on '%s' (Atlas free tier allows max 3).", name, col_name)
+                    try:
+                        col.drop_search_index(name)
+                        dropped_any = True
+                    except Exception as drop_exc:
+                        logger.warning("Could not drop search index '%s': %s", name, drop_exc)
+        except Exception:
+            pass
+
+    if dropped_any:
+        logger.info("Waiting 6 seconds for Atlas Search nodes to release dropped index quota …")
+        time.sleep(6)
+
+
 def _create_search_index(db: Database, collection: str, name: str, definition: dict) -> None:
     """Create a single Atlas Search index, ignoring 'already exists' errors."""
     if collection not in db.list_collection_names():
@@ -197,34 +196,62 @@ def _create_search_index(db: Database, collection: str, name: str, definition: d
         col.create_search_index({"name": name, "definition": definition})
         logger.info("Created search index '%s' on '%s'.", name, collection)
     except OperationFailure as exc:
-        # Code 68 = IndexAlreadyExists
-        if "already exists" in str(exc) or exc.code == 68:
+        msg = str(exc).lower()
+        if "already exists" in msg or "duplicate" in msg or exc.code in (68, 85):
             logger.debug("Search index '%s' on '%s' already exists, skipping.", name, collection)
         else:
             raise
 
 
 def _create_vector_index(db: Database, collection: str, name: str, definition: dict) -> None:
-    """Create a single Atlas Vector Search index, ignoring duplicates."""
+    """Create a single Atlas Vector Search index, skipping if it already exists."""
     if collection not in db.list_collection_names():
         db.create_collection(collection)
     col = db[collection]
+
+    # Pre-check: If index already exists on this collection, skip creation
+    # to avoid Atlas cluster-level quota rejection
+    try:
+        existing = list(col.list_search_indexes())
+        for idx_info in existing:
+            if idx_info.get("name") == name:
+                logger.info(
+                    "Vector index '%s' on '%s' already exists (status: %s), skipping creation.",
+                    name,
+                    collection,
+                    idx_info.get("status", "ACTIVE"),
+                )
+                return
+    except Exception as check_exc:
+        logger.debug("Could not check existing search indexes on '%s': %s", collection, check_exc)
+
     try:
         col.create_search_index(
             {"name": name, "definition": definition, "type": "vectorSearch"}
         )
         logger.info("Created vector index '%s' on '%s'.", name, collection)
     except OperationFailure as exc:
-        if "already exists" in str(exc) or exc.code == 68:
+        msg = str(exc).lower()
+        if "already exists" in msg or "duplicate" in msg or exc.code in (68, 85):
             logger.debug("Vector index '%s' on '%s' already exists, skipping.", name, collection)
+        elif "maximum number of fts indexes" in msg:
+            logger.warning(
+                "Atlas Free Tier quota reached while creating '%s' on '%s'. "
+                "If old indexes exist on your Atlas cluster, run cleanup_atlas_indexes.py or check the Atlas UI.",
+                name,
+                collection,
+            )
         else:
             raise
 
 
 def ensure_all_indexes(db: Database | None = None) -> None:
-    """Create all ordinary, text search and vector search indexes."""
+    """Create all ordinary B-tree indexes and the 3 vector search indexes (for Atlas Free Tier)."""
     db = get_db() if db is None else db
     _ensure_regular_indexes(db)
+
+    # Free up slots on Atlas if any non-vector search indexes exist
+    _clean_non_vector_search_indexes(db)
 
     for idx in _SEARCH_INDEXES:
         _create_search_index(db, idx["collection"], idx["name"], idx["definition"])
@@ -232,7 +259,7 @@ def ensure_all_indexes(db: Database | None = None) -> None:
     for idx in _VECTOR_INDEXES:
         _create_vector_index(db, idx["collection"], idx["name"], idx["definition"])
 
-    logger.info("All indexes submitted.  Run wait_for_search_indexes() to confirm readiness.")
+    logger.info("All 3 vector indexes configured for Atlas Free Tier. Run wait_for_search_indexes() to confirm readiness.")
 
 
 def _list_search_index_status(db: Database) -> dict[str, dict[str, str]]:
